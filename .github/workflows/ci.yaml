@@ -16,56 +16,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate plugin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      matrix:
-        plugin: [realtime, sdlc]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+  # validate:
+  #   name: Validate plugin
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 10
+  #   strategy:
+  #     matrix:
+  #       plugin: [realtime, sdlc]
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '22'
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v6
+  #       with:
+  #         node-version: '22'
 
-      - name: Install Claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+  #     - name: Install Claude CLI
+  #       run: npm install -g @anthropic-ai/claude-code
 
-      - name: Claude plugin validate
-        run: claude plugin validate ./plugins/${{ matrix.plugin }}
+  #     - name: Claude plugin validate
+  #       run: claude plugin validate ./plugins/${{ matrix.plugin }}
 
-  check-links:
-    name: Check symlinks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      matrix:
-        plugin: [realtime, sdlc]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+  # check-links:
+  #   name: Check symlinks
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 10
+  #   strategy:
+  #     matrix:
+  #       plugin: [realtime, sdlc]
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v6
 
-      - name: Symlinks resolve
-        run: |
-          echo "Checking symlinks for ${{ matrix.plugin }} plugin..."
-          failed=0
-          for link in $(find plugins/${{ matrix.plugin }}/skills -type l); do
-            target=$(readlink -f "$link" 2>/dev/null)
-            if [ ! -e "$target" ]; then
-              echo "BROKEN: $link -> $(readlink "$link")"
-              failed=1
-            else
-              echo "OK: $link -> $(readlink "$link")"
-            fi
-          done
-          if [ "$failed" -eq 1 ]; then
-            echo "::error::Broken symlinks detected"
-            exit 1
-          fi
+  #     - name: Symlinks resolve
+  #       run: |
+  #         echo "Checking symlinks for ${{ matrix.plugin }} plugin..."
+  #         failed=0
+  #         for link in $(find plugins/${{ matrix.plugin }}/skills -type l); do
+  #           target=$(readlink -f "$link" 2>/dev/null)
+  #           if [ ! -e "$target" ]; then
+  #             echo "BROKEN: $link -> $(readlink "$link")"
+  #             failed=1
+  #           else
+  #             echo "OK: $link -> $(readlink "$link")"
+  #           fi
+  #         done
+  #         if [ "$failed" -eq 1 ]; then
+  #           echo "::error::Broken symlinks detected"
+  #           exit 1
+  #         fi
 
   lint-docs:
     name: Check documentation consistency

@@ -1,0 +1,63 @@
+name: Publish Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: publish
+
+jobs:
+  publish:
+    name: Publish
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Extract version from branch name
+        id: version
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          VERSION="${BRANCH#release/v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Branch $BRANCH does not contain a valid semver version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Verify plugin versions match
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for plugin_json in plugins/*/.claude-plugin/plugin.json; do
+            PLUGIN_VERSION=$(jq -r '.version' "$plugin_json")
+            if [ "$PLUGIN_VERSION" != "$VERSION" ]; then
+              echo "::error::$plugin_json version ($PLUGIN_VERSION) does not match release ($VERSION)"
+              exit 1
+            fi
+          done
+
+      - name: Create tag
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --generate-notes \
+            --notes-start-tag "$(git tag --list 'v*' --sort=-v:refname | sed -n '2p')" \
+            --latest

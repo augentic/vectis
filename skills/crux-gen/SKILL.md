@@ -1,7 +1,7 @@
 ---
 name: crux-gen
 description: Generate a Rust project based on the Crux framework for user interface applications.
-argument-hint: [project-dir?]
+argument-hint: <spec-file> [project-dir?]
 allowed-tools: Read, Write, Edit, Bash
 model: opus
 disable-model-invocation: true
@@ -23,52 +23,72 @@ until the crate is published to crates.io.
 
 | Argument | Required | Description |
 |---|---|---|
+| `spec-file` | **Yes** | Path to a markdown file describing the application (see **Spec File** below). |
 | `project-dir` | No | Directory to create the project in. Defaults to current directory. |
 
-The user provides a **natural-language description** of the application they want to build.
-The skill derives all types and structure from that description.
+## Spec File
+
+The user provides a **markdown specification file** that describes the application to build.
+A template is available at `app-spec-template.md` in this skill's directory.
+
+The spec file must contain the following sections:
+
+| Section | Purpose | Maps to |
+|---|---|---|
+| **Overview** | App name and one-line summary | App struct name |
+| **Features** | User actions and expected outcomes | Shell-facing Event variants |
+| **Data Model** | Internal state to track | Model fields and supporting types |
+| **User Interface** | What the UI displays | ViewModel fields |
+| **Capabilities** | External I/O the app needs | Effect variants and capability crates |
+| **API Details** | HTTP endpoints, request/response shapes (if applicable) | HTTP call sites, response types |
+| **Business Rules** | Validation, constraints, edge cases | Validation logic in `update()` |
+
+If a section is missing or too vague, ask **one** clarifying question before proceeding.
 
 ## Derived Arguments
 
-The following are inferred from the user's description. Do **not** prompt for them unless
-the description is too ambiguous to proceed.
+The following are inferred from the spec file. Do **not** prompt for them unless
+the spec is too ambiguous to proceed.
 
 | Derived | How to infer | Example |
 |---|---|---|
-| **App struct name** | PascalCase noun from the app concept | `TodoApp`, `NoteEditor`, `Counter` |
-| **Model** | Internal state fields from described features | `todos: Vec<Todo>`, `filter: Filter` |
-| **Event** | User actions + internal callback variants | `AddTodo(String)`, `Fetched(Result<...>)` |
-| **ViewModel** | What the UI needs to display | `items: Vec<TodoView>`, `count: String` |
-| **Capabilities** | Inferred from feature keywords (see below) | Render + HTTP + KV |
+| **App struct name** | PascalCase noun from the Overview section | `TodoApp`, `NoteEditor`, `Counter` |
+| **Model** | Internal state fields from Data Model section | `todos: Vec<Todo>`, `filter: Filter` |
+| **Event** | User actions from Features + internal callback variants from Capabilities | `AddTodo(String)`, `Fetched(Result<...>)` |
+| **ViewModel** | Display data from User Interface section | `items: Vec<TodoView>`, `count: String` |
+| **Capabilities** | Explicitly listed in Capabilities section (see below) | Render + HTTP + KV |
 
 ### Capability Detection
 
-Always include **Render**. Add others based on keywords in the description:
+Always include **Render**. Add others based on the Capabilities section of the spec file:
 
-| Capability | Trigger keywords |
+| Capability | Spec file indicators |
 |---|---|
-| **HTTP** (`crux_http`) | API, REST, fetch, remote, server, endpoint, backend |
-| **Key-Value** (`crux_kv`) | persist, storage, cache, offline, local state, save, store |
-| **SSE / Streaming** (custom) | real-time, live, server-sent events, push, stream, subscribe |
-| **Time** (`crux_time`) | timer, delay, schedule, timeout, interval, clock |
-| **Platform** (`crux_platform`) | platform detection, OS-specific |
+| **HTTP** (`crux_http`) | HTTP row marked "Yes", or API Details section present |
+| **Key-Value** (`crux_kv`) | Key-Value storage row marked "Yes" |
+| **SSE / Streaming** (custom) | Server-Sent Events row marked "Yes" |
+| **Time** (`crux_time`) | Timer / Time row marked "Yes" |
+| **Platform** (`crux_platform`) | Platform detection row marked "Yes" |
 
-If the user describes effects not covered by published capabilities, generate a
+If the spec describes effects not covered by published capabilities, generate a
 custom capability module following the pattern in `references/crux-custom-capabilities.md`.
 
 ## Process
 
-### 1. Analyze the user's description
+### 1. Read and analyze the spec file
 
-Read the description and identify:
-- The core concept and app name
-- State that needs to be tracked (Model)
-- Actions the user can take (shell-facing Event variants)
-- Side-effects needed (determines capabilities and internal Event variants)
-- What the UI needs to show (ViewModel)
+Read the spec file at the path provided by the user. Extract:
+- The core concept and app name (from **Overview**)
+- State that needs to be tracked (from **Data Model** -> Model)
+- Actions the user can take (from **Features** -> shell-facing Event variants)
+- Side-effects needed (from **Capabilities** -> Effect variants and internal Event variants)
+- What the UI needs to show (from **User Interface** -> ViewModel)
+- API shapes (from **API Details** -> HTTP call sites and response types)
+- Validation and constraints (from **Business Rules** -> logic in `update()`)
 
-If the description is too vague to determine Model and Events, ask **one** clarifying question.
-Use `[unknown]` tokens for anything genuinely ambiguous rather than guessing.
+If a required section is missing or too vague to determine Model and Events, ask **one**
+clarifying question. Use `[unknown]` tokens for anything genuinely ambiguous rather than
+guessing.
 
 ### 2. Design the type system
 

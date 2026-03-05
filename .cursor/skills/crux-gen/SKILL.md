@@ -1,13 +1,6 @@
 ---
 name: crux-gen
-description: Generate a Rust project based on the Crux framework for user interface applications.
-argument-hint: <spec-file> [project-dir?]
-allowed-tools: Read, Write, Edit, Bash
-model: opus
-disable-model-invocation: true
-user-invocable: true
-context: fork
-agent: general-purpose
+description: Generate a Rust Crux framework project from a spec file. Use when the user wants to scaffold, bootstrap, or generate a Crux application, or mentions crux-gen.
 ---
 
 # Crux Core Application Generator

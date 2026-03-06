@@ -1,10 +1,9 @@
 use std::{future, pin::Pin};
 
 use async_sse::{decode, Event as SseEvent};
-use async_std::io::Cursor;
 use crux_core::{capability::Operation, command::StreamBuilder, Request};
 use facet::Facet;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -50,24 +49,27 @@ impl ServerSentEvents {
 
         StreamBuilder::new(
             |ctx| -> Pin<Box<dyn Stream<Item = SseMessage> + Send>> {
+                let chunk_reader = ctx
+                    .stream_from_shell(SseRequest { url })
+                    .take_while(|response| future::ready(!response.is_done()))
+                    .map(|response| {
+                        let SseResponse::Chunk(data) = response else {
+                            unreachable!()
+                        };
+                        Ok::<_, std::io::Error>(data)
+                    })
+                    .into_async_read();
+
                 Box::pin(
-                    ctx.stream_from_shell(SseRequest { url })
-                        .take_while(|response| future::ready(!response.is_done()))
-                        .flat_map(|response| {
-                            let SseResponse::Chunk(data) = response else {
-                                unreachable!()
-                            };
-                            decode(Cursor::new(data))
+                    decode(chunk_reader).filter_map(|sse_event| async {
+                        sse_event.ok().and_then(|event| match event {
+                            SseEvent::Message(msg) => Some(SseMessage {
+                                event: msg.name().to_string(),
+                                data: String::from_utf8_lossy(msg.data()).to_string(),
+                            }),
+                            SseEvent::Retry(_) => None,
                         })
-                        .filter_map(|sse_event| async {
-                            sse_event.ok().and_then(|event| match event {
-                                SseEvent::Message(msg) => Some(SseMessage {
-                                    event: msg.name().to_string(),
-                                    data: String::from_utf8_lossy(msg.data()).to_string(),
-                                }),
-                                SseEvent::Retry(_) => None,
-                            })
-                        }),
+                    }),
                 )
             },
         )

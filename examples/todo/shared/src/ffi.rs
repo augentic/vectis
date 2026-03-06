@@ -46,7 +46,7 @@ impl CoreFFI {
 
     /// Resolve an effect with a response and return any new serialized effects.
     /// # Panics
-    /// If the data cannot be deserialized or the effect_id is invalid.
+    /// If the data cannot be deserialized or the `effect_id` is invalid.
     #[must_use]
     pub fn resolve(&self, id: u32, data: &[u8]) -> Vec<u8> {
         let mut effects = Vec::new();
@@ -56,7 +56,7 @@ impl CoreFFI {
         }
     }
 
-    /// Get the current ViewModel as serialized bytes.
+    /// Get the current `ViewModel` as serialized bytes.
     /// # Panics
     /// If the view cannot be serialized.
     #[must_use]

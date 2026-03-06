@@ -48,8 +48,8 @@ pub enum PendingOp {
 impl PendingOp {
     fn item_id(&self) -> &str {
         match self {
-            PendingOp::Create(item) | PendingOp::Update(item) => &item.id,
-            PendingOp::Delete { id, .. } => id,
+            Self::Create(item) | Self::Update(item) => &item.id,
+            Self::Delete { id, .. } => id,
         }
     }
 }
@@ -245,6 +245,7 @@ impl App for TodoApp {
     type ViewModel = ViewModel;
     type Effect = Effect;
 
+    #[allow(clippy::too_many_lines)]
     fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         match event {
             Event::Initialize => KeyValue::get("todo_state").then_send(Event::DataLoaded),
@@ -342,7 +343,7 @@ impl App for TodoApp {
                 ])
             }
 
-            Event::DataLoaded(Ok(None)) | Event::DataLoaded(Err(_)) => {
+            Event::DataLoaded(Ok(None) | Err(_)) => {
                 Command::all([render(), Command::event(Event::ConnectSse)])
             }
 
@@ -351,18 +352,12 @@ impl App for TodoApp {
             // ── Internal: HTTP ──────────────────────────────────────
 
             Event::ItemsFetched(Ok(mut response)) => {
-                if let Some(server_items) = response.take_body() {
+                if let Some(ref server_items) = response.take_body() {
                     merge_server_items(model, server_items);
                 }
-                model.sse_state = SseConnectionState::Connected;
                 Self::save_state(model)
                     .and(render())
                     .and(Command::event(Event::ConnectSse))
-            }
-
-            Event::ItemsFetched(Err(_)) => {
-                model.sync_status = SyncStatus::Offline;
-                render()
             }
 
             Event::OpResponse(Ok(mut response)) => {
@@ -376,11 +371,6 @@ impl App for TodoApp {
                 Self::save_state(model).and(Command::event(Event::RetrySync))
             }
 
-            Event::OpResponse(Err(_)) => {
-                model.sync_status = SyncStatus::Offline;
-                render()
-            }
-
             Event::DeleteOpResponse(Ok(_)) => {
                 if !model.pending_ops.is_empty() {
                     model.pending_ops.remove(0);
@@ -389,7 +379,9 @@ impl App for TodoApp {
                 Self::save_state(model).and(Command::event(Event::RetrySync))
             }
 
-            Event::DeleteOpResponse(Err(_)) => {
+            Event::ItemsFetched(Err(_))
+            | Event::OpResponse(Err(_))
+            | Event::DeleteOpResponse(Err(_)) => {
                 model.sync_status = SyncStatus::Offline;
                 render()
             }
@@ -403,7 +395,7 @@ impl App for TodoApp {
 
                 match msg.event.as_str() {
                     "item_created" | "item_updated" => {
-                        if let Ok(server_item) = serde_json::from_str::<TodoItem>(&msg.data) {
+                        if let Ok(ref server_item) = serde_json::from_str::<TodoItem>(&msg.data) {
                             apply_server_item(model, server_item);
                         }
                     }
@@ -471,7 +463,7 @@ fn update_or_insert_item(model: &mut Model, item: &TodoItem) {
     }
 }
 
-fn merge_server_items(model: &mut Model, server_items: Vec<TodoItem>) {
+fn merge_server_items(model: &mut Model, server_items: &[TodoItem]) {
     for server_item in server_items {
         apply_server_item(model, server_item);
     }
@@ -480,14 +472,14 @@ fn merge_server_items(model: &mut Model, server_items: Vec<TodoItem>) {
 /// Apply a server-sourced item using last-writer-wins conflict resolution.
 /// If the server item is at least as recent as any conflicting local mutation,
 /// the server version wins and the pending op is removed.
-fn apply_server_item(model: &mut Model, server_item: TodoItem) {
+fn apply_server_item(model: &mut Model, server_item: &TodoItem) {
     let has_pending = model
         .pending_ops
         .iter()
         .any(|op| op.item_id() == server_item.id);
 
     if !has_pending {
-        update_or_insert_item(model, &server_item);
+        update_or_insert_item(model, server_item);
         return;
     }
 
@@ -500,7 +492,7 @@ fn apply_server_item(model: &mut Model, server_item: TodoItem) {
             model
                 .pending_ops
                 .retain(|op| op.item_id() != server_item.id);
-            update_or_insert_item(model, &server_item);
+            update_or_insert_item(model, server_item);
         }
     } else {
         let local_ts = model
@@ -509,13 +501,13 @@ fn apply_server_item(model: &mut Model, server_item: TodoItem) {
             .find(|i| i.id == server_item.id)
             .map(|i| i.updated_at.as_str());
 
-        let server_wins = local_ts.map_or(true, |ts| server_item.updated_at.as_str() >= ts);
+        let server_wins = local_ts.is_none_or(|ts| server_item.updated_at.as_str() >= ts);
 
         if server_wins {
             model
                 .pending_ops
                 .retain(|op| op.item_id() != server_item.id);
-            update_or_insert_item(model, &server_item);
+            update_or_insert_item(model, server_item);
         }
     }
 }
@@ -954,7 +946,7 @@ mod tests {
         };
 
         let server = make_item("a", "Server", true, "2025-01-02T00:00:00Z");
-        apply_server_item(&mut model, server);
+        apply_server_item(&mut model, &server);
 
         assert_eq!(model.items[0].title, "Server");
         assert!(model.items[0].completed);
@@ -975,7 +967,7 @@ mod tests {
         };
 
         let server = make_item("a", "Server", true, "2025-01-01T00:00:00Z");
-        apply_server_item(&mut model, server);
+        apply_server_item(&mut model, &server);
 
         assert_eq!(model.items[0].title, "Local");
         assert!(!model.items[0].completed);
@@ -996,7 +988,7 @@ mod tests {
         };
 
         let server = make_item("a", "Server", true, "2025-01-01T00:00:00Z");
-        apply_server_item(&mut model, server);
+        apply_server_item(&mut model, &server);
 
         assert_eq!(model.items[0].title, "Server");
         assert!(model.pending_ops.is_empty());
@@ -1007,7 +999,7 @@ mod tests {
         let mut model = Model::default();
 
         let server = make_item("new", "New Item", false, "2025-01-01T00:00:00Z");
-        apply_server_item(&mut model, server);
+        apply_server_item(&mut model, &server);
 
         assert_eq!(model.items.len(), 1);
         assert_eq!(model.items[0].title, "New Item");

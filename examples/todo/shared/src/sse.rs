@@ -64,8 +64,8 @@ impl ServerSentEvents {
                     decode(chunk_reader).filter_map(|sse_event| async {
                         sse_event.ok().and_then(|event| match event {
                             SseEvent::Message(msg) => Some(SseMessage {
-                                event: msg.name().to_string(),
-                                data: String::from_utf8_lossy(msg.data()).to_string(),
+                                event: msg.name().clone(),
+                                data: String::from_utf8_lossy(msg.data()).into_owned(),
                             }),
                             SseEvent::Retry(_) => None,
                         })

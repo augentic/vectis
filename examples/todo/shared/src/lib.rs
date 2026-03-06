@@ -1,3 +1,5 @@
+#![allow(clippy::cargo_common_metadata)]
+
 mod app;
 pub mod ffi;
 pub mod sse;

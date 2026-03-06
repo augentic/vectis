@@ -290,6 +290,14 @@ After all mechanical checks pass, review the generated code for these common log
    reconnects, ensure the SSE connection state transitions are:
    `Connected → Disconnected → (fetch items) → Connecting → Connected` (on first message).
    Never set `Connected` before the stream is actually producing events.
+5. **Pending op removal by ID, not index** -- when a queue of pending operations is synced
+   one-at-a-time via HTTP, never remove the completed op by position (`pending_ops.remove(0)`).
+   Concurrent events (SSE, fetch-all) can `retain(...)` the same op out of the queue while
+   the HTTP request is in-flight, shifting indices. Instead, store the in-flight op's item ID
+   in a `syncing_id: Option<String>` field on the model, set it in `start_sync`, and use
+   `retain(|op| op.item_id() != synced_id)` in the response handler. Clear `syncing_id` on
+   both success and error. See `references/crux-app-pattern.md` § "Pending Operation Sync
+   Queue" for the full pattern.
 
 ## Reference Documentation
 
@@ -351,6 +359,7 @@ Before completing, verify:
 - [ ] Doc comments use backticks around type and parameter names
 - [ ] State transitions are consistent across chained events (no contradictory state before
   a follow-up `Command::event`)
+- [ ] Pending ops removed by tracked ID (`syncing_id`), never by index (`remove(0)`)
 
 ## Important Notes
 

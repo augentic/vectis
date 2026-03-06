@@ -115,6 +115,10 @@ pub struct ViewModel {
 pub struct Model {
     items: Vec<TodoItem>,
     pending_ops: Vec<PendingOp>,
+    /// The item ID of the currently in-flight sync operation, used to remove
+    /// the correct pending op when the HTTP response arrives (SSE may have
+    /// already shifted `pending_ops` indices).
+    syncing_id: Option<String>,
     filter: Filter,
     sync_status: SyncStatus,
     sse_state: SseConnectionState,
@@ -203,6 +207,7 @@ impl TodoApp {
         model.sync_status = SyncStatus::Syncing;
 
         let op = model.pending_ops[0].clone();
+        model.syncing_id = Some(op.item_id().to_string());
         let http_cmd = match op {
             PendingOp::Create(ref item) => {
                 let body = TodoCreateBody {
@@ -364,16 +369,16 @@ impl App for TodoApp {
                 if let Some(server_item) = response.take_body() {
                     update_or_insert_item(model, &server_item);
                 }
-                if !model.pending_ops.is_empty() {
-                    model.pending_ops.remove(0);
+                if let Some(synced_id) = model.syncing_id.take() {
+                    model.pending_ops.retain(|op| op.item_id() != synced_id);
                 }
                 model.sync_status = SyncStatus::Idle;
                 Self::save_state(model).and(Command::event(Event::RetrySync))
             }
 
             Event::DeleteOpResponse(Ok(_)) => {
-                if !model.pending_ops.is_empty() {
-                    model.pending_ops.remove(0);
+                if let Some(synced_id) = model.syncing_id.take() {
+                    model.pending_ops.retain(|op| op.item_id() != synced_id);
                 }
                 model.sync_status = SyncStatus::Idle;
                 Self::save_state(model).and(Command::event(Event::RetrySync))
@@ -382,6 +387,7 @@ impl App for TodoApp {
             Event::ItemsFetched(Err(_))
             | Event::OpResponse(Err(_))
             | Event::DeleteOpResponse(Err(_)) => {
+                model.syncing_id = None;
                 model.sync_status = SyncStatus::Offline;
                 render()
             }
@@ -745,12 +751,13 @@ mod tests {
     // ── OpResponse ──────────────────────────────────────────────────
 
     #[test]
-    fn op_response_ok_removes_first_pending_op() {
+    fn op_response_ok_removes_synced_pending_op() {
         let app = TodoApp;
         let item = make_item("a", "Test", false, "2025-01-01T00:00:00Z");
         let mut model = Model {
             pending_ops: vec![PendingOp::Create(item.clone())],
             sync_status: SyncStatus::Syncing,
+            syncing_id: Some("a".to_string()),
             ..Model::default()
         };
 
@@ -1003,5 +1010,99 @@ mod tests {
 
         assert_eq!(model.items.len(), 1);
         assert_eq!(model.items[0].title, "New Item");
+    }
+
+    // ── Race condition: SSE removes in-flight op before HTTP response ──
+
+    #[test]
+    fn sse_removing_syncing_op_does_not_clobber_next_pending_op() {
+        let app = TodoApp;
+        let item_a = make_item("a", "Item A", false, "2025-06-01T00:00:00Z");
+        let item_b = make_item("b", "Item B", false, "2025-06-01T00:00:00Z");
+
+        let mut model = Model {
+            items: vec![item_a.clone(), item_b.clone()],
+            pending_ops: vec![
+                PendingOp::Create(item_a.clone()),
+                PendingOp::Create(item_b),
+            ],
+            sync_status: SyncStatus::Syncing,
+            syncing_id: Some("a".to_string()),
+            ..Model::default()
+        };
+
+        let server_a = item_a.clone();
+
+        // SSE confirms item A was created — removes it from pending_ops
+        let _cmd = app.update(
+            Event::SseReceived(SseMessage {
+                event: "item_created".to_string(),
+                data: serde_json::to_string(&item_a).unwrap(),
+            }),
+            &mut model,
+        );
+        assert_eq!(model.pending_ops.len(), 1, "SSE should remove op A");
+        assert_eq!(model.pending_ops[0].item_id(), "b");
+
+        // HTTP response for A arrives — must NOT remove op B
+        let _cmd = app.update(
+            Event::OpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
+                .body(server_a)
+                .build())),
+            &mut model,
+        );
+
+        assert_eq!(
+            model.pending_ops.len(),
+            1,
+            "Op B must survive the HTTP response for A"
+        );
+        assert_eq!(model.pending_ops[0].item_id(), "b");
+    }
+
+    #[test]
+    fn sse_delete_removing_syncing_op_does_not_clobber_next_pending_op() {
+        let app = TodoApp;
+        let item_b = make_item("b", "Item B", false, "2025-06-01T00:00:00Z");
+
+        let mut model = Model {
+            items: vec![item_b.clone()],
+            pending_ops: vec![
+                PendingOp::Delete {
+                    id: "a".to_string(),
+                    deleted_at: "2025-06-01T00:00:00Z".to_string(),
+                },
+                PendingOp::Create(item_b),
+            ],
+            sync_status: SyncStatus::Syncing,
+            syncing_id: Some("a".to_string()),
+            ..Model::default()
+        };
+
+        // SSE confirms item A was deleted — removes it from pending_ops
+        let _cmd = app.update(
+            Event::SseReceived(SseMessage {
+                event: "item_deleted".to_string(),
+                data: r#"{"id":"a"}"#.to_string(),
+            }),
+            &mut model,
+        );
+        assert_eq!(model.pending_ops.len(), 1, "SSE should remove delete op A");
+        assert_eq!(model.pending_ops[0].item_id(), "b");
+
+        // HTTP delete response for A arrives — must NOT remove op B
+        let _cmd = app.update(
+            Event::DeleteOpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
+                .body(String::new())
+                .build())),
+            &mut model,
+        );
+
+        assert_eq!(
+            model.pending_ops.len(),
+            1,
+            "Op B must survive the delete HTTP response for A"
+        );
+        assert_eq!(model.pending_ops[0].item_id(), "b");
     }
 }

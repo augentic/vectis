@@ -198,6 +198,17 @@ Run `cargo check` in the project directory. If it fails:
 
 Then run `cargo test` to verify tests pass.
 
+### 10. Review for unused dependencies
+
+After the build passes, audit `Cargo.toml` against actual usage:
+
+1. For every non-optional dependency in `[dependencies]`, search `src/` for a corresponding
+   `use {crate_name}` or a macro/derive from that crate. Remove any dependency that has no
+   matching usage.
+2. For every crate in `[dev-dependencies]`, search test modules for usage. Remove any that
+   are not referenced.
+3. Re-run `cargo check` after removals to confirm nothing was missed.
+
 ## Reference Documentation
 
 Consult these references during generation. Do not deviate from the patterns they describe.
@@ -248,6 +259,7 @@ Before completing, verify:
 - [ ] At least one test per Event variant exists
 - [ ] No `unwrap()` in production code paths (allowed in tests)
 - [ ] Type aliases defined for each capability: `type Http = crux_http::Http<Effect, Event>;`
+- [ ] No unused dependencies in `Cargo.toml` -- every crate has a matching `use` in `src/`
 
 ## Important Notes
 

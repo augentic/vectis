@@ -160,7 +160,7 @@ pub enum Event {
 
     #[serde(skip)]
     #[facet(skip)]
-    DataSaved(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
+    DataSaved(#[facet(opaque)] Result<(), KeyValueError>),
 
     // Internal – HTTP
     #[serde(skip)]

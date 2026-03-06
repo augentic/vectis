@@ -263,3 +263,88 @@ fn update(&self, event: Event, model: &mut Model) -> Command {
 
 Use `Command::done()` when no side-effects are needed and no render is required
 (rare -- usually you want at least `render::render()`).
+
+## Pending Operation Sync Queue
+
+When the app queues local mutations (create, update, delete) as pending operations and
+syncs them to a server one at a time via HTTP, use the following pattern to avoid a
+race condition where concurrent events (SSE, fetch-all) shift the queue while an HTTP
+request is in-flight.
+
+**The bug this prevents:** calling `pending_ops.remove(0)` in the HTTP response handler
+assumes the completed op is still at index 0. If an SSE event removes that same op via
+`retain(...)` first, `remove(0)` silently drops an unrelated pending operation, losing
+a user mutation.
+
+### Model fields
+
+```rust
+#[derive(Default)]
+pub struct Model {
+    items: Vec<Item>,
+    pending_ops: Vec<PendingOp>,
+    /// Item ID of the currently in-flight sync operation.
+    syncing_id: Option<String>,
+    sync_status: SyncStatus,
+    // ...
+}
+```
+
+### Starting sync
+
+Always sync from `pending_ops[0]`. Record its ID before dispatching the HTTP command:
+
+```rust
+fn start_sync(model: &mut Model) -> Command {
+    if model.pending_ops.is_empty() {
+        model.sync_status = SyncStatus::Idle;
+        return render();
+    }
+    if model.sync_status == SyncStatus::Syncing {
+        return Command::done();
+    }
+    model.sync_status = SyncStatus::Syncing;
+
+    let op = model.pending_ops[0].clone();
+    model.syncing_id = Some(op.item_id().to_string());
+
+    // ... build and return the HTTP command for `op`
+}
+```
+
+### Handling the response
+
+Remove by ID match, not by index. Use `retain` so it is a no-op when SSE already
+removed the op:
+
+```rust
+Event::OpResponse(Ok(mut response)) => {
+    if let Some(server_item) = response.take_body() {
+        update_or_insert_item(model, &server_item);
+    }
+    if let Some(synced_id) = model.syncing_id.take() {
+        model.pending_ops.retain(|op| op.item_id() != synced_id);
+    }
+    model.sync_status = SyncStatus::Idle;
+    Self::save_state(model).and(Command::event(Event::RetrySync))
+}
+```
+
+### Error handling
+
+Clear `syncing_id` on error so the next `RetrySync` can re-attempt the same op:
+
+```rust
+Event::OpResponse(Err(_)) | Event::DeleteOpResponse(Err(_)) => {
+    model.syncing_id = None;
+    model.sync_status = SyncStatus::Offline;
+    render()
+}
+```
+
+### Why `retain` instead of `remove`
+
+- `retain(|op| op.item_id() != id)` is idempotent -- safe if SSE already removed the op.
+- `remove(0)` is positional -- if the queue shifted, it drops the wrong operation.
+- The `syncing_id` field makes the "which op is in-flight" question explicit rather than
+  relying on the assumption that it is always at index 0.

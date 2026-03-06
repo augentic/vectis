@@ -1,13 +1,6 @@
 ---
 name: crux-gen
-description: Generate a Rust project based on the Crux framework for user interface applications.
-argument-hint: <spec-file> [project-dir?]
-allowed-tools: Read, Write, Edit, Bash
-model: opus
-disable-model-invocation: true
-user-invocable: true
-context: fork
-agent: general-purpose
+description: Generate a Rust Crux framework project from a spec file. Use when the user wants to scaffold, bootstrap, or generate a Crux application, or mentions crux-gen.
 ---
 
 # Crux Core Application Generator
@@ -123,10 +116,51 @@ rust-version = "1.85"
 crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
 serde = "1.0"
 facet = "=0.31"
+
+[workspace.lints.rust]
+trivial_numeric_casts = "warn"
+unused_extern_crates = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+nursery = "warn"
+pedantic = "warn"
+cargo = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
 ```
 
 Add capability crates to `[workspace.dependencies]` based on detected capabilities.
 See `references/crux-project-config.md` for the full dependency list.
+
+**`{project-dir}/clippy.toml`** -- clippy configuration:
+```toml
+doc-valid-idents = []
+
+allowed-duplicate-crates = []
+```
+
+Populate `allowed-duplicate-crates` after `cargo clippy` reports false-positive duplicate
+crate warnings from transitive dependencies. Run `cargo tree -d | grep '^[a-z]'` to discover
+which crates are duplicated.
 
 **`{project-dir}/rust-toolchain.toml`** -- toolchain config:
 ```toml
@@ -151,6 +185,9 @@ Follow the template in `references/crux-project-config.md`. Key points:
 - Feature-gate `uniffi` and `wasm_bindgen` dependencies
 - Add a `codegen` feature for type generation
 - Include only the capability crates actually needed
+- Add `[lints] workspace = true` to inherit workspace lint configuration
+- Add `#![allow(clippy::cargo_common_metadata)]` to `lib.rs` if the crate is not
+  intended for crates.io publication (e.g., example projects)
 
 ### 5. Generate `shared/src/app.rs`
 
@@ -205,6 +242,63 @@ Run `cargo check` in the project directory. If it fails:
 
 Then run `cargo test` to verify tests pass.
 
+### 10. Lint with clippy
+
+Run `cargo clippy --all-targets`. The workspace lints (`all`, `nursery`, `pedantic`, `cargo`,
+plus restriction cherry-picks) are configured in the workspace `Cargo.toml`. Fix all warnings
+before proceeding. Common issues:
+
+- `use_self` -- use `Self` instead of the type name inside impl blocks
+- `match_same_arms` -- merge arms with identical bodies into one
+- `too_many_lines` -- extract helpers or allow on the function with a justification comment
+  (the `update()` match dispatch is commonly allowed)
+- `unnecessary_map_or` -- use `is_none_or` / `is_some_and` instead of `map_or`
+- `implicit_clone` -- use `.clone()` instead of `.to_string()` on `&String`
+- `unnested_or_patterns` -- nest patterns: `Event::X(Ok(None) | Err(_))` not
+  `Event::X(Ok(None)) | Event::X(Err(_))`
+- `needless_pass_by_value` -- take `&T` or `&[T]` when the function doesn't consume ownership
+- `doc_markdown` -- use backticks around type names in doc comments (e.g., `` `ViewModel` ``)
+- `cargo_common_metadata` -- add metadata or allow if the crate is not published
+- `multiple_crate_versions` -- add duplicate crate names to `clippy.toml`
+  `allowed-duplicate-crates` when they are transitive and cannot be resolved
+
+### 11. Review for unused dependencies
+
+After the build passes, audit `Cargo.toml` against actual usage:
+
+1. For every non-optional dependency in `[dependencies]`, search `src/` for a corresponding
+   `use {crate_name}` or a macro/derive from that crate. Remove any dependency that has no
+   matching usage.
+2. For every crate in `[dev-dependencies]`, search test modules for usage. Remove any that
+   are not referenced.
+3. Re-run `cargo check` after removals to confirm nothing was missed.
+
+### 12. Self-review for logic bugs
+
+After all mechanical checks pass, review the generated code for these common logic issues:
+
+1. **State consistency** -- when an event triggers a follow-up event (via `Command::event`),
+   verify the model state set before the follow-up is consistent with what the follow-up
+   handler expects. Example bug: setting `state = Connected` then dispatching `ConnectSse`
+   which sets `state = Connecting`.
+2. **Ownership in helpers** -- prefer `&T` and `&[T]` over owned `T` and `Vec<T>` in helper
+   function signatures when the function only reads the data (cloning internally as needed).
+3. **`expect()` in production paths** -- `expect()` panics like `unwrap()`. Only use it
+   for operations that are provably infallible (e.g., serializing a simple
+   `#[derive(Serialize)]` struct with no custom serializers). Add a descriptive message.
+4. **SSE reconnection flow** -- when SSE disconnects and the app re-fetches state then
+   reconnects, ensure the SSE connection state transitions are:
+   `Connected → Disconnected → (fetch items) → Connecting → Connected` (on first message).
+   Never set `Connected` before the stream is actually producing events.
+5. **Pending op removal by ID, not index** -- when a queue of pending operations is synced
+   one-at-a-time via HTTP, never remove the completed op by position (`pending_ops.remove(0)`).
+   Concurrent events (SSE, fetch-all) can `retain(...)` the same op out of the queue while
+   the HTTP request is in-flight, shifting indices. Instead, store the in-flight op's item ID
+   in a `syncing_id: Option<String>` field on the model, set it in `start_sync`, and use
+   `retain(|op| op.item_id() != synced_id)` in the response handler. Clear `syncing_id` on
+   both success and error. See `references/crux-app-pattern.md` § "Pending Operation Sync
+   Queue" for the full pattern.
+
 ## Reference Documentation
 
 Consult these references during generation. Do not deviate from the patterns they describe.
@@ -246,6 +340,10 @@ Before completing, verify:
 
 - [ ] `cargo check` passes with no errors
 - [ ] `cargo test` passes with no failures
+- [ ] `cargo clippy --all-targets` passes with no warnings
+- [ ] Workspace lints (`all`, `nursery`, `pedantic`, `cargo`, restriction cherry-picks)
+  are configured in workspace `Cargo.toml` and inherited via `[lints] workspace = true`
+- [ ] `clippy.toml` exists with `allowed-duplicate-crates` populated for transitive duplicates
 - [ ] Every Event variant is handled in `update()`
 - [ ] Every `update()` branch returns a `Command` (not `()`)
 - [ ] Internal Event variants have `#[serde(skip)]` and `#[facet(skip)]`
@@ -253,8 +351,15 @@ Before completing, verify:
 - [ ] Effect enum uses `#[effect(facet_typegen)]`
 - [ ] `CoreFFI` uses feature-gated `uniffi` and `wasm_bindgen` attributes
 - [ ] At least one test per Event variant exists
-- [ ] No `unwrap()` in production code paths (allowed in tests)
+- [ ] No `unwrap()` or `expect()` in production code (allowed in tests; `expect()` allowed
+  only for provably infallible operations like serializing a simple derive struct)
 - [ ] Type aliases defined for each capability: `type Http = crux_http::Http<Effect, Event>;`
+- [ ] No unused dependencies in `Cargo.toml` -- every crate has a matching `use` in `src/`
+- [ ] Helper functions take `&T` / `&[T]` unless they need ownership
+- [ ] Doc comments use backticks around type and parameter names
+- [ ] State transitions are consistent across chained events (no contradictory state before
+  a follow-up `Command::event`)
+- [ ] Pending ops removed by tracked ID (`syncing_id`), never by index (`remove(0)`)
 
 ## Important Notes
 

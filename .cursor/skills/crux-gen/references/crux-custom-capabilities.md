@@ -86,16 +86,21 @@ MyCap::fetch("https://example.com", "value")
 ## Streaming Capability (SSE Example)
 
 For capabilities that produce a stream of responses (like Server-Sent Events),
-use `StreamBuilder`:
+use `StreamBuilder`.
+
+**Critical:** The shell delivers SSE data as arbitrary TCP chunks. An SSE event
+can span multiple chunks. You must feed **all** chunks into a **single**
+`async_sse::decode` instance via a unified `AsyncBufRead` reader. Never create
+a new `decode` per chunk -- events that straddle chunk boundaries will be
+silently lost.
 
 ```rust
-use std::{convert::From, future};
+use std::{future, pin::Pin};
 
 use async_sse::{decode, Event as SseEvent};
-use async_std::io::Cursor;
 use crux_core::{capability::Operation, command::StreamBuilder, Request};
 use facet::Facet;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -126,7 +131,7 @@ pub struct ServerSentEvents;
 impl ServerSentEvents {
     pub fn get<Effect, Event, T>(
         url: impl Into<String>,
-    ) -> StreamBuilder<Effect, Event, T>
+    ) -> StreamBuilder<Effect, Event, Pin<Box<dyn Stream<Item = T> + Send>>>
     where
         Effect: From<Request<SseRequest>> + Send + 'static,
         Event: Send + 'static,
@@ -134,24 +139,34 @@ impl ServerSentEvents {
     {
         let url = url.into();
 
-        StreamBuilder::new(|ctx| {
-            ctx.stream_from_shell(SseRequest { url })
-                .take_while(|response| future::ready(!response.is_done()))
-                .flat_map(|response| {
-                    let SseResponse::Chunk(data) = response else {
-                        unreachable!()
-                    };
-                    decode(Cursor::new(data))
-                })
-                .filter_map(|sse_event| async {
-                    sse_event.ok().and_then(|event| match event {
-                        SseEvent::Message(msg) => {
-                            serde_json::from_slice(msg.data()).ok()
-                        }
-                        SseEvent::Retry(_) => None,
+        StreamBuilder::new(
+            |ctx| -> Pin<Box<dyn Stream<Item = T> + Send>> {
+                // Convert chunks into a single contiguous AsyncBufRead reader
+                // so that async_sse::decode can reassemble events across chunk
+                // boundaries.
+                let chunk_reader = ctx
+                    .stream_from_shell(SseRequest { url })
+                    .take_while(|response| future::ready(!response.is_done()))
+                    .map(|response| {
+                        let SseResponse::Chunk(data) = response else {
+                            unreachable!()
+                        };
+                        Ok::<_, std::io::Error>(data)
                     })
-                })
-        })
+                    .into_async_read();
+
+                Box::pin(
+                    decode(chunk_reader).filter_map(|sse_event| async {
+                        sse_event.ok().and_then(|event| match event {
+                            SseEvent::Message(msg) => {
+                                serde_json::from_slice(msg.data()).ok()
+                            }
+                            SseEvent::Retry(_) => None,
+                        })
+                    }),
+                )
+            },
+        )
     }
 }
 ```
@@ -161,7 +176,6 @@ impl ServerSentEvents {
 ```toml
 [dependencies]
 async-sse = "5"
-async-std = "1"
 futures = "0.3"
 ```
 

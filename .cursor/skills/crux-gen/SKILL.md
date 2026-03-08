@@ -290,7 +290,12 @@ After all mechanical checks pass, review the generated code for these common log
    reconnects, ensure the SSE connection state transitions are:
    `Connected → Disconnected → (fetch items) → Connecting → Connected` (on first message).
    Never set `Connected` before the stream is actually producing events.
-5. **Pending op removal by ID, not index** -- when a queue of pending operations is synced
+5. **KV event payload types** -- `KeyValue::set` and `KeyValue::delete` both return
+   `Result<Option<Vec<u8>>, KeyValueError>` (the previous value), **not** `Result<(), KeyValueError>`.
+   A common mistake is to declare the callback event variant as `Saved(Result<(), KeyValueError>)`
+   which causes a type mismatch. Always use `Result<Option<Vec<u8>>, KeyValueError>` for
+   `set`, `get`, and `delete` callbacks. Only `exists` returns `Result<bool, KeyValueError>`.
+6. **Pending op removal by ID, not index** -- when a queue of pending operations is synced
    one-at-a-time via HTTP, never remove the completed op by position (`pending_ops.remove(0)`).
    Concurrent events (SSE, fetch-all) can `retain(...)` the same op out of the queue while
    the HTTP request is in-flight, shifting indices. Instead, store the in-flight op's item ID
@@ -333,6 +338,7 @@ See `references/examples/` for complete worked examples:
 | `uniffi` build failures | Ensure `uniffi` is behind `feature = "uniffi"` gate, not unconditional |
 | Missing `Operation` impl for custom capability | Each custom request type must `impl Operation` with `type Output` |
 | `#[serde(skip)]` on Event variant causes deserialization panic | Internal variants must never be sent from the shell; guard with `#[facet(skip)]` too |
+| KV `set`/`delete` callback type mismatch (`Result<(), _>` vs `Result<Option<Vec<u8>>, _>`) | `KeyValue::set` and `KeyValue::delete` return the previous value as `Result<Option<Vec<u8>>, KeyValueError>`, never `Result<(), _>`. Update the Event variant payload to match. |
 
 ## Verification Checklist
 
@@ -355,6 +361,8 @@ Before completing, verify:
   only for provably infallible operations like serializing a simple derive struct)
 - [ ] Type aliases defined for each capability: `type Http = crux_http::Http<Effect, Event>;`
 - [ ] No unused dependencies in `Cargo.toml` -- every crate has a matching `use` in `src/`
+- [ ] KV callback Event variants use `Result<Option<Vec<u8>>, KeyValueError>` for `get`/`set`/`delete`
+  (not `Result<(), _>`) and `Result<bool, KeyValueError>` for `exists`
 - [ ] Helper functions take `&T` / `&[T]` unless they need ownership
 - [ ] Doc comments use backticks around type and parameter names
 - [ ] State transitions are consistent across chained events (no contradictory state before

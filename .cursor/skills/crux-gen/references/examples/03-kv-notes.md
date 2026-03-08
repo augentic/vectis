@@ -149,7 +149,7 @@ pub enum Event {
 
     #[serde(skip)]
     #[facet(skip)]
-    Saved(#[facet(opaque)] Result<(), KeyValueError>),
+    Saved(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
 }
 
 // Effects
@@ -226,7 +226,7 @@ impl App for Notes {
                 render().and(Self::save_notes(&model.notes))
             }
 
-            Event::Saved(Ok(())) => {
+            Event::Saved(Ok(_)) => {
                 Command::done()
             }
 
@@ -394,7 +394,7 @@ mod tests {
         let app = Notes;
         let mut model = Model::default();
 
-        let cmd = app.update(Event::Saved(Ok(())), &mut model);
+        let cmd = app.update(Event::Saved(Ok(None)), &mut model);
         assert!(cmd.is_done());
     }
 

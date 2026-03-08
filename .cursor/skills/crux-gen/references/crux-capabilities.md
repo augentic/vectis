@@ -228,7 +228,7 @@ pub enum Event {
 
     #[serde(skip)]
     #[facet(skip)]
-    Saved(#[facet(opaque)] Result<(), KeyValueError>),
+    Saved(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
 }
 ```
 
@@ -251,7 +251,7 @@ KeyValue::set("my-key", bytes)
     .then_send(Event::Saved)
 ```
 
-Returns `Result<(), KeyValueError>`.
+Returns `Result<Option<Vec<u8>>, KeyValueError>` — the previous value if one existed.
 
 **Delete a value:**
 
@@ -296,7 +296,7 @@ Event::Loaded(Err(e)) => {
     model.error = Some(format!("Load failed: {e}"));
     render()
 }
-Event::Saved(Ok(())) => {
+Event::Saved(Ok(_)) => {
     model.save_status = SaveStatus::Saved;
     render()
 }

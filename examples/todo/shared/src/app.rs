@@ -323,10 +323,35 @@ impl App for TodoApp {
                 }
                 model.items.retain(|i| !i.completed);
                 for id in completed {
-                    model.pending_ops.push(PendingOp::Delete {
-                        id,
-                        deleted_at: timestamp.clone(),
+                    // Coalesce pending operations for this id:
+                    // - Drop any existing Update/Delete for this id, since we're about to delete.
+                    // - If the item only exists as a pending Create, drop the Create and skip Delete.
+                    let mut saw_create = false;
+                    let mut saw_non_create = false;
+                    model.pending_ops.retain(|op| {
+                        match op {
+                            PendingOp::Create(item) if item.id == id => {
+                                saw_create = true;
+                                false
+                            }
+                            PendingOp::Update(item) if item.id == id => {
+                                saw_non_create = true;
+                                false
+                            }
+                            PendingOp::Delete { id: delete_id, .. } if delete_id == &id => {
+                                saw_non_create = true;
+                                false
+                            }
+                            _ => true,
+                        }
                     });
+                    // If we only had a pending Create for this item, there's nothing on the server to delete.
+                    if saw_create && !saw_non_create {
+                        continue;
+                    }
+                    model
+                        .pending_ops
+                        .push(PendingOp::Delete { id, deleted_at: timestamp.clone() });
                 }
                 Self::save_state(model).and(Self::start_sync(model))
             }

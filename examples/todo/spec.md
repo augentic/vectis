@@ -16,6 +16,8 @@ so changes made by other clients appear automatically.
   and pushed to the server.
 - **Toggle completion** -- user taps an item to toggle it between active and completed.
 - **Delete item** -- user removes an item from the list.
+- **Clear completed** -- user taps a "Clear completed" button; all completed items
+  are removed from the list and delete operations are queued for each.
 - **Offline operation** -- all of the above work without network connectivity.
   Mutations are queued locally and flushed when the server becomes reachable.
 - **Automatic sync** -- pending operations are sent to the server immediately when
@@ -54,6 +56,8 @@ so changes made by other clients appear automatically.
   - Count of remaining active items (e.g. "3 items left").
   - Sync status indicator: a green dot when synced, an amber dot with pending
     count when changes are queued, a red dot when offline.
+  - A "Clear completed" button, visible only when at least one completed item
+    exists.
 - Filter tabs: **All**, **Active**, **Completed**. The selected filter controls
   which items appear in the list.
 
@@ -186,6 +190,8 @@ data: {"id":"cm1a2b3c4d5e6f7g8h9i0","title":"Buy oat milk","completed":true,"upd
   catch up on any events missed during the disconnect. (NOTE: refetching the
   entire list on every reconnect is simple but potentially expensive at scale.
   A future improvement could use `Last-Event-ID` to replay only missed events.)
+- **Clear completed** -- removes all completed items atomically. A Delete
+  pending operation is queued for each removed item.
 - **Local persistence** -- the full item list and pending queue are written to
   Key-Value storage after every state change so the app can resume after a
   restart.

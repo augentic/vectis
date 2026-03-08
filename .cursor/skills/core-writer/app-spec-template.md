@@ -1,6 +1,6 @@
 # App Specification: [App Name]
 
-<!-- Fill out each section below. The crux-gen skill uses this file to generate
+<!-- Fill out each section below. The core-writer skill uses this file to generate
      your Crux shared crate. Delete the guidance comments once you've filled
      in each section. -->
 

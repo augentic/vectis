@@ -14,9 +14,9 @@ The project goals are also shared by the [CRUX](https://github.com/redbadger/cru
 
 Familiarize yourself with how CRUX works by scanning the [documentation](https://docs.rs/crux_core/latest/crux_core/)
 
-## Using the crux-gen Skill
+## Using the core-writer Skill
 
-The `crux-gen` skill generates a buildable [Crux](https://github.com/redbadger/crux) `shared` crate from a **markdown specification file** that describes your application. It produces all of the core business logic, state management, and side-effect orchestration -- no shell code (iOS, Android, Web) is generated.
+The `core-writer` skill generates a buildable [Crux](https://github.com/redbadger/crux) `shared` crate from a **markdown specification file** that describes your application. It produces all of the core business logic, state management, and side-effect orchestration -- no shell code (iOS, Android, Web) is generated.
 
 ### Quick Start
 
@@ -24,20 +24,20 @@ The `crux-gen` skill generates a buildable [Crux](https://github.com/redbadger/c
 2. Copy the spec template into your project and fill it out:
 
    ```bash
-   cp skills/crux-gen/app-spec-template.md my-todo-app.md
+   cp skills/core-writer/app-spec-template.md my-todo-app.md
    ```
 
 3. Edit `my-todo-app.md` to describe the app you want to build (see **What You Provide** below).
 4. Ask the agent to generate the app, passing the spec file. Reference the skill explicitly so the agent picks it up:
 
-   > Use the crux-gen skill with `my-todo-app.md` to generate the app in `my-todo-app/`.
+   > Use the core-writer skill with `my-todo-app.md` to generate the app in `my-todo-app/`.
 
 5. The skill will read the spec, derive all types and structure, and generate a complete `shared` crate with tests.
 6. Once generation finishes, `cargo check` and `cargo test` are run automatically to verify the output.
 
 ### What You Provide
 
-A markdown specification file based on the template at `skills/crux-gen/app-spec-template.md`. The template contains the following sections -- fill out each one:
+A markdown specification file based on the template at `skills/core-writer/app-spec-template.md`. The template contains the following sections -- fill out each one:
 
 | Section | What to include |
 |---|---|
@@ -107,7 +107,7 @@ A minimal counter app with increment and decrement buttons.
 | **Platform detection** | No | |
 ```
 
-> Use crux-gen with `counter-spec.md` to generate the app in `my-counter/`.
+> Use core-writer with `counter-spec.md` to generate the app in `my-counter/`.
 
 Notes app with local persistence -- create a spec file describing notes CRUD with Key-Value storage marked "Yes".
 

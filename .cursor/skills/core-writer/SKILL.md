@@ -1,6 +1,6 @@
 ---
-name: crux-gen
-description: Generate or update a Rust Crux framework project from a spec file. Use when the user wants to scaffold, bootstrap, generate, or update a Crux application, or mentions crux-gen.
+name: core-writer
+description: Generate or update a Rust Crux framework project from a spec file. Use when the user wants to scaffold, bootstrap, generate, or update a Crux application, or mentions core-writer.
 ---
 
 # Crux Core Application Generator

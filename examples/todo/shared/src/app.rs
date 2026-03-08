@@ -786,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn view_show_clear_completed_when_completed_exist() {
+    fn view_show_clear_completed_when_completed_exists() {
         let app = TodoApp;
         let model = seeded_model();
 

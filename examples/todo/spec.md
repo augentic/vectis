@@ -17,7 +17,7 @@ so changes made by other clients appear automatically.
 - **Toggle completion** -- user taps an item to toggle it between active and completed.
 - **Delete item** -- user removes an item from the list.
 - **Clear completed** -- user taps a "Clear completed" button; all completed items
-  are removed from the list and delete operations are queued for each.
+  are removed from the list and a delete operation is queued for each removed item.
 - **Offline operation** -- all of the above work without network connectivity.
   Mutations are queued locally and flushed when the server becomes reachable.
 - **Automatic sync** -- pending operations are sent to the server immediately when

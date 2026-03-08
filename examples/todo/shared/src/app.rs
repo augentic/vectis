@@ -107,6 +107,7 @@ pub struct ViewModel {
     pub pending_count: usize,
     pub sync_status: String,
     pub filter: Filter,
+    pub show_clear_completed: bool,
 }
 
 // ── Model ───────────────────────────────────────────────────────────────
@@ -148,6 +149,7 @@ pub enum Event {
     EditTitle(String, String, String),
     ToggleCompleted(String, String),
     DeleteTodo(String, String),
+    ClearCompleted(String),
     SetFilter(Filter),
     RetrySync,
     ConnectSse,
@@ -309,6 +311,51 @@ impl App for TodoApp {
                 Self::save_state(model).and(Self::start_sync(model))
             }
 
+            Event::ClearCompleted(timestamp) => {
+                let completed: Vec<String> = model
+                    .items
+                    .iter()
+                    .filter(|i| i.completed)
+                    .map(|i| i.id.clone())
+                    .collect();
+                if completed.is_empty() {
+                    return Command::done();
+                }
+                model.items.retain(|i| !i.completed);
+                for id in completed {
+                    // Coalesce pending operations for this id:
+                    // - Drop any existing Update/Delete for this id, since we're about to delete.
+                    // - If the item only exists as a pending Create, drop the Create and skip Delete.
+                    let mut saw_create = false;
+                    let mut saw_non_create = false;
+                    model.pending_ops.retain(|op| {
+                        match op {
+                            PendingOp::Create(item) if item.id == id => {
+                                saw_create = true;
+                                false
+                            }
+                            PendingOp::Update(item) if item.id == id => {
+                                saw_non_create = true;
+                                false
+                            }
+                            PendingOp::Delete { id: delete_id, .. } if delete_id == &id => {
+                                saw_non_create = true;
+                                false
+                            }
+                            _ => true,
+                        }
+                    });
+                    // If we only had a pending Create for this item, there's nothing on the server to delete.
+                    if saw_create && !saw_non_create {
+                        continue;
+                    }
+                    model
+                        .pending_ops
+                        .push(PendingOp::Delete { id, deleted_at: timestamp.clone() });
+                }
+                Self::save_state(model).and(Self::start_sync(model))
+            }
+
             Event::SetFilter(filter) => {
                 model.filter = filter;
                 render()
@@ -455,6 +502,7 @@ impl App for TodoApp {
                 SyncStatus::Offline => format!("{} pending", model.pending_ops.len()),
             },
             filter: model.filter.clone(),
+            show_clear_completed: model.items.iter().any(|i| i.completed),
         }
     }
 }
@@ -695,6 +743,67 @@ mod tests {
             &model.pending_ops[0],
             PendingOp::Delete { id, .. } if id == "a"
         ));
+    }
+
+    // ── ClearCompleted ──────────────────────────────────────────────
+
+    #[test]
+    fn clear_completed_removes_done_items_and_queues_ops() {
+        let app = TodoApp;
+        let mut model = seeded_model();
+
+        let _cmd = app.update(
+            Event::ClearCompleted("2025-06-02T00:00:00Z".to_string()),
+            &mut model,
+        );
+
+        assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items[0].id, "a");
+        assert!(!model.items[0].completed);
+        assert_eq!(model.pending_ops.len(), 1);
+        assert!(matches!(
+            &model.pending_ops[0],
+            PendingOp::Delete { id, .. } if id == "b"
+        ));
+    }
+
+    #[test]
+    fn clear_completed_with_none_completed_is_noop() {
+        let app = TodoApp;
+        let mut model = Model {
+            items: vec![make_item("a", "Active", false, "t")],
+            ..Model::default()
+        };
+
+        let mut cmd = app.update(
+            Event::ClearCompleted("2025-06-02T00:00:00Z".to_string()),
+            &mut model,
+        );
+
+        assert!(cmd.is_done());
+        assert_eq!(model.items.len(), 1);
+        assert!(model.pending_ops.is_empty());
+    }
+
+    #[test]
+    fn view_show_clear_completed_when_completed_exists() {
+        let app = TodoApp;
+        let model = seeded_model();
+
+        let view = app.view(&model);
+        assert!(view.show_clear_completed);
+    }
+
+    #[test]
+    fn view_hide_clear_completed_when_none_completed() {
+        let app = TodoApp;
+        let model = Model {
+            items: vec![make_item("a", "Active", false, "t")],
+            ..Model::default()
+        };
+
+        let view = app.view(&model);
+        assert!(!view.show_clear_completed);
     }
 
     // ── SetFilter ───────────────────────────────────────────────────

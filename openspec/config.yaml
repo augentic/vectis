@@ -1,20 +1,21 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  This project (vectis) builds cross-platform applications using the Crux framework (Rust).
+  The core-writer skill at .cursor/skills/core-writer/SKILL.md generates Crux shared crates
+  from app spec files. Each example app lives in examples/<app-name>/ as a Cargo workspace
+  with a shared/ crate containing all business logic, state management, and side-effect
+  orchestration. See examples/todo/ for a reference implementation.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  The crux-app schema orchestrates app generation: it produces a core-writer-compatible
+  app-spec artifact, then the apply phase invokes the core-writer skill to generate the code.
+
+rules:
+  app-spec:
+    - Follow the core-writer app-spec-template.md format exactly
+    - Include all sections -- Overview, Features, Data Model, User Interface, Views, Capabilities, API Details, Business Rules
+    - The Capabilities table must include all five capability rows (HTTP, KV, Timer/Time, SSE, Platform detection)
+    - The title line must be "# App Specification: <AppName>"
+  tasks:
+    - Tasks must invoke the core-writer skill via .cursor/skills/core-writer/SKILL.md
+    - Include verification steps (cargo check, cargo test, cargo clippy)

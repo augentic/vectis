@@ -299,7 +299,7 @@ impl App for TodoApp {
                     Page::Error => {
                         model.page = Page::Loading;
                         model.error_message = None;
-                        Command::event(Event::Initialize)
+                        render().and(Command::event(Event::Initialize))
                     }
                     Page::Loading | Page::TodoList => Command::done(),
                 },

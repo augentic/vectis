@@ -143,6 +143,7 @@ pub struct Model {
     notes: Vec<Note>,
     next_id: usize,
     error_message: Option<String>,
+    save_error: Option<String>,
 }
 
 // Per-page view structs
@@ -151,6 +152,7 @@ pub struct Model {
 pub struct NoteListView {
     pub notes: Vec<NoteView>,
     pub count: String,
+    pub error: String,
 }
 
 #[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
@@ -274,11 +276,13 @@ impl App for Notes {
             },
 
             Event::Saved(Ok(_)) => {
-                Command::done()
+                model.save_error = None;
+                render()
             }
 
-            Event::Saved(Err(_)) => {
-                Command::done()
+            Event::Saved(Err(e)) => {
+                model.save_error = Some(format!("Save failed: {e}"));
+                render()
             }
         }
     }
@@ -301,6 +305,7 @@ impl App for Notes {
                     model.notes.len(),
                     if model.notes.len() == 1 { "" } else { "s" }
                 ),
+                error: model.save_error.clone().unwrap_or_default(),
             }),
             Page::Error => ViewModel::Error(ErrorView {
                 message: model.error_message.clone().unwrap_or_default(),
@@ -529,12 +534,53 @@ mod tests {
     }
 
     #[test]
-    fn saved_ok_does_nothing() {
+    fn saved_ok_clears_error() {
         let app = Notes;
-        let mut model = Model::default();
+        let mut model = Model {
+            page: Page::NoteList,
+            save_error: Some("previous failure".to_string()),
+            ..Model::default()
+        };
 
-        let cmd = app.update(Event::Saved(Ok(None)), &mut model);
-        assert!(cmd.is_done());
+        let mut cmd = app.update(Event::Saved(Ok(None)), &mut model);
+
+        assert!(model.save_error.is_none());
+        cmd.expect_one_effect().expect_render();
+
+        let ViewModel::NoteList(view) = app.view(&model) else {
+            panic!("expected NoteList view");
+        };
+        assert!(view.error.is_empty());
+    }
+
+    #[test]
+    fn saved_error_surfaces_in_note_list_view() {
+        let app = Notes;
+        let mut model = Model {
+            page: Page::NoteList,
+            notes: vec![
+                Note { id: 1, title: "A".to_string(), body: "".to_string() },
+            ],
+            next_id: 2,
+            ..Model::default()
+        };
+
+        let mut cmd = app.update(
+            Event::Saved(Err(KeyValueError::Io {
+                message: "disk full".to_string(),
+            })),
+            &mut model,
+        );
+
+        assert!(model.save_error.is_some());
+        cmd.expect_one_effect().expect_render();
+
+        let ViewModel::NoteList(view) = app.view(&model) else {
+            panic!("expected NoteList view");
+        };
+        assert!(!view.error.is_empty());
+        assert!(view.error.contains("disk full"));
+        assert_eq!(view.notes.len(), 1, "notes remain intact after save failure");
     }
 }
 ```

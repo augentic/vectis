@@ -42,14 +42,16 @@ The `Model` holds all internal application state. It is never sent to the shell.
 ```rust
 #[derive(Default)]
 pub struct Model {
+    page: Page,
     count: isize,
     items: Vec<Item>,
-    loading: bool,
+    error_message: Option<String>,
 }
 ```
 
 Rules:
 - Must implement `Default` to define initial state.
+- Must include a `page: Page` field to track the current view (see **Page Management**).
 - Fields are `pub(crate)` or private -- never `pub` (they don't leave the core).
 - Use newtypes for domain identifiers: `struct ItemId(String)`.
 - Use enums for known value sets: `enum Filter { All, Active, Completed }`.
@@ -72,6 +74,7 @@ use serde::{Deserialize, Serialize};
 #[repr(C)]
 pub enum Event {
     // Shell-facing events (user actions)
+    Navigate(Route),
     Increment,
     Decrement,
     Reset,
@@ -87,6 +90,8 @@ pub enum Event {
 Rules:
 - Derive `Facet, Serialize, Deserialize` for FFI compatibility.
 - Add `#[repr(C)]` for `facet` enum layout.
+- Include `Navigate(Route)` for shell-initiated view changes (see **Shell-initiated
+  navigation** under Page Management).
 - Internal variants with non-serializable payloads (like `crux_http::Result`) must have
   `#[serde(skip)]` and `#[facet(skip)]`.
 - Mark opaque fields inside skipped variants with `#[facet(opaque)]`.
@@ -95,26 +100,214 @@ Rules:
 
 ## ViewModel
 
-The ViewModel is what the shell renders. It crosses the FFI boundary so it must be
-fully serializable and have type generation support.
+The ViewModel is an **enum** where each variant represents a distinct view (page or
+screen) of the application. It crosses the FFI boundary so it must be fully
+serializable and have type generation support. The shell pattern-matches on the
+ViewModel to decide which screen to render.
 
 ```rust
-#[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ViewModel {
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+#[repr(C)]
+pub enum ViewModel {
+    #[default]
+    Loading,
+    Main(MainView),
+    Error(ErrorView),
+}
+```
+
+Each variant that carries data wraps a **per-page view struct**:
+
+```rust
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct MainView {
     pub count: String,
     pub items: Vec<ItemView>,
-    pub is_loading: bool,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ErrorView {
+    pub message: String,
+    pub can_retry: bool,
 }
 ```
 
 Rules:
-- Derive `Facet, Serialize, Deserialize, Clone, Debug, Default`.
-- All fields are `pub` (the shell reads them).
+- The ViewModel enum derives `Facet, Serialize, Deserialize, Clone, Debug, Default`
+  and has `#[repr(C)]`.
+- Per-page view structs derive `Facet, Serialize, Deserialize, Clone, Debug, Default`.
+- All fields on per-page view structs are `pub` (the shell reads them).
 - Use `String` for formatted display values -- formatting logic belongs in the core's
   `view()` function, not in the shell.
-- Use simple types the shell can easily consume. Avoid complex enums in the view model
-  when a bool or string suffices.
+- Use simple types the shell can easily consume. Avoid complex enums in per-page view
+  structs when a bool or string suffices.
 - The ViewModel is computed fresh on each `view()` call; it is not incrementally updated.
+- `#[default]` on the initial variant (typically `Loading`) provides the `Default` impl.
+- Variants without associated data (e.g. `Loading`) represent screens the shell renders
+  without needing data from the core.
+
+### Error views vs in-page errors
+
+Two categories of error require different treatment:
+
+- **Blocking errors** (failed initialization, auth failure) warrant a dedicated
+  `ViewModel::Error(ErrorView)` variant. `ErrorView` carries a user-facing `message`
+  and a `can_retry` flag so the shell knows whether to show a retry button.
+- **Recoverable errors** (a single HTTP request failing, going offline) are handled
+  as fields within a page's view struct (e.g. `sync_status: String`). The user stays
+  on the current page -- no separate ViewModel variant is needed.
+
+## Page Management
+
+The core controls all navigation. The `Model` tracks which page is current using a
+private `Page` enum. The `view()` function matches on `model.page` to produce the
+right ViewModel variant. Page transitions happen in `update()` by setting `model.page`.
+
+### Page enum (internal)
+
+```rust
+#[derive(Default)]
+enum Page {
+    #[default]
+    Loading,
+    Main,
+    Error,
+}
+```
+
+The `Page` enum is internal to the core -- it does NOT derive `Facet` or `Serialize`
+and never crosses the FFI boundary. Add it as a field on `Model`:
+
+```rust
+#[derive(Default)]
+pub struct Model {
+    page: Page,
+    error_message: Option<String>,
+    // ... other fields
+}
+```
+
+### Page transitions in `update()`
+
+Set `model.page` to transition between views. The shell sees the change on the
+next `view()` call (triggered by a `render()`).
+
+```rust
+Event::Initialize => {
+    // page is already Page::Loading (the default)
+    KeyValue::get("state").then_send(Event::DataLoaded)
+}
+Event::DataLoaded(Ok(Some(bytes))) => {
+    // restore state ...
+    model.page = Page::Main;
+    render()
+}
+Event::DataLoaded(Err(e)) => {
+    model.page = Page::Error;
+    model.error_message = Some(format!("Failed to load data: {e}"));
+    render()
+}
+Event::Navigate(Route::Main) => match model.page {
+    Page::Error => {
+        model.page = Page::Loading;
+        model.error_message = None;
+        Command::event(Event::Initialize)
+    }
+    _ => Command::done(),
+}
+```
+
+### `view()` matches on page
+
+```rust
+fn view(&self, model: &Self::Model) -> Self::ViewModel {
+    match model.page {
+        Page::Loading => ViewModel::Loading,
+        Page::Main => ViewModel::Main(MainView {
+            count: format!("Count is: {}", model.count),
+            items: model.items.iter().map(/* ... */).collect(),
+        }),
+        Page::Error => ViewModel::Error(ErrorView {
+            message: model.error_message.clone().unwrap_or_default(),
+            can_retry: true,
+        }),
+    }
+}
+```
+
+Rules:
+- Every `Page` variant must have a corresponding `ViewModel` variant and a match arm
+  in `view()`.
+- Every `Page` variant must be reachable by at least one transition in `update()`.
+- The `Page` enum and `ViewModel` enum variants should have a 1:1 correspondence.
+- For single-page apps, the ViewModel enum has a single variant wrapping the page's
+  view struct. A `Loading` variant is recommended when the app loads data on startup.
+
+### Shell-initiated navigation
+
+The shell can request view changes via an `Event::Navigate(Route)` event. The
+`Route` enum is a shell-facing type that enumerates navigable destinations --
+typically a subset of `Page`, excluding internal states like `Loading` and `Error`.
+
+```rust
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    Main,
+    Settings,
+    ItemDetail(String),
+}
+```
+
+Add a shell-facing event variant:
+
+```rust
+pub enum Event {
+    Navigate(Route),
+    // ... other events
+}
+```
+
+The `update()` handler maps `Route` to `Page`, taking current state into account.
+The core decides what action is required -- it may need to load data, clear error
+state, or simply switch the page:
+
+```rust
+Event::Navigate(route) => {
+    match route {
+        Route::Main => match model.page {
+            Page::Error => {
+                model.page = Page::Loading;
+                model.error_message = None;
+                Command::event(Event::Initialize)
+            }
+            Page::Loading => Command::done(),
+            Page::Main => Command::done(),
+        },
+        Route::Settings => {
+            model.page = Page::Settings;
+            render()
+        }
+        Route::ItemDetail(id) => {
+            model.selected_item_id = Some(id);
+            model.page = Page::ItemDetail;
+            render()
+        }
+    }
+}
+```
+
+Rules:
+- `Route` derives `Facet, Serialize, Deserialize` and has `#[repr(C)]` -- it crosses FFI.
+- `Route` variants represent **user-navigable destinations** only. Internal states
+  (Loading, Error) are not `Route` variants -- the core transitions to those
+  automatically.
+- The `Navigate` handler must be state-aware: navigating to a view that requires
+  data may trigger a load sequence rather than an immediate page switch.
+- `Route` can carry payload for parameterised views (e.g. `ItemDetail(String)` for
+  a detail screen that needs an item ID).
+- Use cases: deep links, back button, tab bar, push notification opens.
 
 ## Effect
 
@@ -203,25 +396,33 @@ Rules:
 The `view()` function maps Model to ViewModel. It is a pure function with no
 side effects. All formatting and presentation logic belongs here.
 
+The function matches on `model.page` and returns the corresponding ViewModel variant:
+
 ```rust
 fn view(&self, model: &Self::Model) -> Self::ViewModel {
-    ViewModel {
-        count: format!("Count is: {}", model.count),
-        items: model
-            .items
-            .iter()
-            .filter(|item| match model.filter {
-                Filter::All => true,
-                Filter::Active => !item.completed,
-                Filter::Completed => item.completed,
-            })
-            .map(|item| ItemView {
-                id: item.id.clone(),
-                title: item.title.clone(),
-                completed: item.completed,
-            })
-            .collect(),
-        is_loading: model.loading,
+    match model.page {
+        Page::Loading => ViewModel::Loading,
+        Page::Main => ViewModel::Main(MainView {
+            count: format!("Count is: {}", model.count),
+            items: model
+                .items
+                .iter()
+                .filter(|item| match model.filter {
+                    Filter::All => true,
+                    Filter::Active => !item.completed,
+                    Filter::Completed => item.completed,
+                })
+                .map(|item| ItemView {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    completed: item.completed,
+                })
+                .collect(),
+        }),
+        Page::Error => ViewModel::Error(ErrorView {
+            message: model.error_message.clone().unwrap_or_default(),
+            can_retry: true,
+        }),
     }
 }
 ```
@@ -281,6 +482,7 @@ a user mutation.
 ```rust
 #[derive(Default)]
 pub struct Model {
+    page: Page,
     items: Vec<Item>,
     pending_ops: Vec<PendingOp>,
     /// Item ID of the currently in-flight sync operation.

@@ -1,6 +1,6 @@
 # App Specification: [App Name]
 
-<!-- Fill out each section below. The crux-gen skill uses this file to generate
+<!-- Fill out each section below. The core-writer skill uses this file to generate
      your Crux shared crate. Delete the guidance comments once you've filled
      in each section. -->
 
@@ -32,14 +32,46 @@
 
 ## User Interface
 
-<!-- Describe what the user sees. Focus on the data displayed, not visual
-     styling. Each distinct view or screen should be a sub-section or bullet.
+<!-- Describe what the user sees on each view. Focus on the data displayed,
+     not visual styling. Organise by view -- use the view names from the
+     Views section as sub-headings.
 
      Example:
+     ### Item List
      - A text input field and an "Add" button at the top.
      - A list of items showing title and a completion checkbox.
      - A count of remaining active items ("3 items left").
      - Filter buttons: All, Active, Completed. -->
+
+## Views
+
+<!-- List every distinct screen or page the user can see. Each view is a
+     self-contained UI state managed by the core. The shell pattern-matches
+     on the view model variant to decide which screen to render.
+
+     Include at least one view. For single-screen apps, list a Loading view
+     (shown while initial data loads) and the main view. Consider whether
+     blocking error conditions (failed initialization, auth failure) need
+     a dedicated error view with a retry affordance.
+
+     Recoverable errors that don't block the whole screen (e.g. a failed
+     HTTP request, going offline) are better handled as fields within a
+     page's view data -- they don't need their own view.
+
+     Example:
+     - **Loading** -- a spinner shown while initial data loads from local storage.
+     - **Error** -- a full-screen error with a message and retry button, shown
+       when initial data loading fails.
+     - **Item List** -- the main list view with items, filters, and action bar.
+     - **Item Detail** -- shows a single item with edit controls. Navigated to
+       by tapping an item in the list; returns to Item List on save or cancel.
+
+     For views that the shell can navigate to (e.g. via tab bar, back button,
+     or deep link), describe how navigation reaches them. Internal-only states
+     (Loading, Error) are not shell-navigable -- the core transitions to them
+     automatically. -->
+
+- **View name** -- what the user sees and when they see it.
 
 ## Capabilities
 

@@ -47,6 +47,17 @@ so changes made by other clients appear automatically.
 
 ## User Interface
 
+### Loading
+
+- A centered spinner or activity indicator with no other content.
+
+### Error
+
+- A centered error message describing what went wrong.
+- A "Retry" button below the message.
+
+### Todo List
+
 - A text input field and an "Add" button at the top of the screen.
 - A scrollable list of items. Each item shows:
   - A checkbox reflecting the `completed` state.
@@ -60,6 +71,19 @@ so changes made by other clients appear automatically.
     exists.
 - Filter tabs: **All**, **Active**, **Completed**. The selected filter controls
   which items appear in the list.
+
+## Views
+
+- **Loading** -- shown while local data is loaded from Key-Value storage on
+  startup. No user interaction is possible. Internal state -- not shell-navigable.
+- **Error** -- shown when Key-Value data loading fails. Displays an error
+  message and a "Retry" button. The shell sends a navigate event to return
+  to the Todo List; the core handles re-initialization. Internal state -- not
+  shell-navigable directly (reached only via failed initialization).
+- **Todo List** -- the main view showing the input, item list, filters, sync
+  status, and footer. Shell-navigable (the only navigable destination in this
+  app). In-page sync errors (e.g. going offline) are shown as status fields
+  within this view, not as a separate error page.
 
 ## Capabilities
 

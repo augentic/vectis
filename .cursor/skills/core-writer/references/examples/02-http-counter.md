@@ -108,19 +108,49 @@ pub struct Count {
     updated_at: Option<String>,
 }
 
+// Page (internal)
+
+#[derive(Default)]
+enum Page {
+    #[default]
+    Loading,
+    Counter,
+}
+
+// Route (shell-navigable destinations)
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    Counter,
+}
+
 // Model
 
 #[derive(Default, Serialize)]
 pub struct Model {
+    #[serde(skip)]
+    page: Page,
     count: Count,
+}
+
+// Per-page view structs
+
+#[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
+pub struct CounterView {
+    pub text: String,
+    pub confirmed: bool,
 }
 
 // ViewModel
 
 #[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ViewModel {
-    pub text: String,
-    pub confirmed: bool,
+#[repr(C)]
+pub enum ViewModel {
+    #[default]
+    Loading,
+    Counter(CounterView),
 }
 
 // Events
@@ -128,6 +158,7 @@ pub struct ViewModel {
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub enum Event {
+    Navigate(Route),
     Get,
     Increment,
     Decrement,
@@ -163,6 +194,13 @@ impl App for Counter {
 
     fn update(&self, event: Event, model: &mut Model) -> Command {
         match event {
+            Event::Navigate(route) => match route {
+                Route::Counter => match model.page {
+                    Page::Loading => Command::done(),
+                    Page::Counter => Command::done(),
+                },
+            },
+
             Event::Get => Http::get(API_URL)
                 .expect_json()
                 .build()
@@ -174,11 +212,13 @@ impl App for Counter {
             }
 
             Event::Set(Err(_)) => {
+                model.page = Page::Counter;
                 model.count.updated_at = Some("error".to_string());
                 render()
             }
 
             Event::Updated(count) => {
+                model.page = Page::Counter;
                 model.count = count;
                 render()
             }
@@ -216,15 +256,20 @@ impl App for Counter {
     }
 
     fn view(&self, model: &Self::Model) -> Self::ViewModel {
-        let suffix = model
-            .count
-            .updated_at
-            .as_ref()
-            .map_or_else(|| " (pending)".to_string(), |d| format!(" ({d})"));
+        match model.page {
+            Page::Loading => ViewModel::Loading,
+            Page::Counter => {
+                let suffix = model
+                    .count
+                    .updated_at
+                    .as_ref()
+                    .map_or_else(|| " (pending)".to_string(), |d| format!(" ({d})"));
 
-        ViewModel {
-            text: model.count.value.to_string() + &suffix,
-            confirmed: model.count.updated_at.is_some(),
+                ViewModel::Counter(CounterView {
+                    text: model.count.value.to_string() + &suffix,
+                    confirmed: model.count.updated_at.is_some(),
+                })
+            }
         }
     }
 }
@@ -326,16 +371,27 @@ mod tests {
     }
 
     #[test]
+    fn initial_view_is_loading() {
+        let app = Counter;
+        let model = Model::default();
+
+        assert!(matches!(app.view(&model), ViewModel::Loading));
+    }
+
+    #[test]
     fn view_shows_pending_when_unconfirmed() {
         let app = Counter;
         let model = Model {
+            page: Page::Counter,
             count: Count {
                 value: 7,
                 updated_at: None,
             },
         };
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model) else {
+            panic!("expected Counter view");
+        };
         assert_eq!(view.text, "7 (pending)");
         assert!(!view.confirmed);
     }
@@ -344,13 +400,16 @@ mod tests {
     fn view_shows_timestamp_when_confirmed() {
         let app = Counter;
         let model = Model {
+            page: Page::Counter,
             count: Count {
                 value: 7,
                 updated_at: Some("2023-01-01".to_string()),
             },
         };
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model) else {
+            panic!("expected Counter view");
+        };
         assert_eq!(view.text, "7 (2023-01-01)");
         assert!(view.confirmed);
     }

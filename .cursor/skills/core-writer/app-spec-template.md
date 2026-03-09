@@ -64,7 +64,12 @@
        when initial data loading fails.
      - **Item List** -- the main list view with items, filters, and action bar.
      - **Item Detail** -- shows a single item with edit controls. Navigated to
-       by tapping an item in the list; returns to Item List on save or cancel. -->
+       by tapping an item in the list; returns to Item List on save or cancel.
+
+     For views that the shell can navigate to (e.g. via tab bar, back button,
+     or deep link), describe how navigation reaches them. Internal-only states
+     (Loading, Error) are not shell-navigable -- the core transitions to them
+     automatically. -->
 
 - **View name** -- what the user sees and when they see it.
 

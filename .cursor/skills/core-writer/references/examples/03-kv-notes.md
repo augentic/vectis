@@ -126,6 +126,15 @@ enum Page {
     Error,
 }
 
+// Route (shell-navigable destinations)
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    NoteList,
+}
+
 // Model
 
 #[derive(Default)]
@@ -169,7 +178,7 @@ pub enum Event {
     Load,
     Add(String, String),
     Remove(usize),
-    Retry,
+    Navigate(Route),
 
     #[serde(skip)]
     #[facet(skip)]
@@ -253,11 +262,16 @@ impl App for Notes {
                 render().and(Self::save_notes(&model.notes))
             }
 
-            Event::Retry => {
-                model.page = Page::Loading;
-                model.error_message = None;
-                Command::event(Event::Load)
-            }
+            Event::Navigate(route) => match route {
+                Route::NoteList => match model.page {
+                    Page::Error => {
+                        model.page = Page::Loading;
+                        model.error_message = None;
+                        Command::event(Event::Load)
+                    }
+                    Page::Loading | Page::NoteList => Command::done(),
+                },
+            },
 
             Event::Saved(Ok(_)) => {
                 Command::done()
@@ -383,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_from_error_reloads() {
+    fn navigate_from_error_reloads() {
         let app = Notes;
         let mut model = Model {
             page: Page::Error,
@@ -391,13 +405,38 @@ mod tests {
             ..Model::default()
         };
 
-        let mut cmd = app.update(Event::Retry, &mut model);
+        let mut cmd = app.update(Event::Navigate(Route::NoteList), &mut model);
 
         assert!(matches!(model.page, Page::Loading));
         assert!(model.error_message.is_none());
 
         let event = cmd.expect_one_event();
         assert_eq!(event, Event::Load);
+    }
+
+    #[test]
+    fn navigate_from_loading_is_noop() {
+        let app = Notes;
+        let mut model = Model::default();
+
+        let cmd = app.update(Event::Navigate(Route::NoteList), &mut model);
+
+        assert!(matches!(model.page, Page::Loading));
+        assert!(cmd.is_done());
+    }
+
+    #[test]
+    fn navigate_from_note_list_is_noop() {
+        let app = Notes;
+        let mut model = Model {
+            page: Page::NoteList,
+            ..Model::default()
+        };
+
+        let cmd = app.update(Event::Navigate(Route::NoteList), &mut model);
+
+        assert!(matches!(model.page, Page::NoteList));
+        assert!(cmd.is_done());
     }
 
     #[test]

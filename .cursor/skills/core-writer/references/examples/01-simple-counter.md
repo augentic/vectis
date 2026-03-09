@@ -95,6 +95,13 @@ enum Page {
     Counter,
 }
 
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    Counter,
+}
+
 #[derive(Default)]
 pub struct Model {
     page: Page,
@@ -116,6 +123,7 @@ pub enum ViewModel {
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub enum Event {
+    Navigate(Route),
     Increment,
     Decrement,
     Reset,
@@ -138,11 +146,22 @@ impl App for Counter {
 
     fn update(&self, event: Event, model: &mut Model) -> Command {
         match event {
-            Event::Increment => model.count += 1,
-            Event::Decrement => model.count -= 1,
-            Event::Reset => model.count = 0,
+            Event::Navigate(route) => match route {
+                Route::Counter => Command::done(),
+            },
+            Event::Increment => {
+                model.count += 1;
+                render()
+            }
+            Event::Decrement => {
+                model.count -= 1;
+                render()
+            }
+            Event::Reset => {
+                model.count = 0;
+                render()
+            }
         }
-        render()
     }
 
     fn view(&self, model: &Self::Model) -> Self::ViewModel {

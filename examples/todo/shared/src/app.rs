@@ -100,6 +100,15 @@ enum Page {
     Error,
 }
 
+// ── Route (shell-navigable destinations) ────────────────────────────────
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    TodoList,
+}
+
 // ── View model ──────────────────────────────────────────────────────────
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -171,7 +180,7 @@ pub enum Effect {
 pub enum Event {
     // Shell-facing
     Initialize,
-    Retry,
+    Navigate(Route),
     SetInput(String),
     AddTodo(String, String),
     EditTitle(String, String, String),
@@ -285,11 +294,16 @@ impl App for TodoApp {
         match event {
             Event::Initialize => KeyValue::get("todo_state").then_send(Event::DataLoaded),
 
-            Event::Retry => {
-                model.page = Page::Loading;
-                model.error_message = None;
-                Command::event(Event::Initialize)
-            }
+            Event::Navigate(route) => match route {
+                Route::TodoList => match model.page {
+                    Page::Error => {
+                        model.page = Page::Loading;
+                        model.error_message = None;
+                        Command::event(Event::Initialize)
+                    }
+                    Page::Loading | Page::TodoList => Command::done(),
+                },
+            },
 
             Event::SetInput(text) => {
                 model.input_text = text;
@@ -929,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_from_error_reinitializes() {
+    fn navigate_from_error_reinitializes() {
         let app = TodoApp;
         let mut model = Model {
             page: Page::Error,
@@ -937,13 +951,38 @@ mod tests {
             ..Model::default()
         };
 
-        let mut cmd = app.update(Event::Retry, &mut model);
+        let mut cmd = app.update(Event::Navigate(Route::TodoList), &mut model);
 
         assert!(matches!(model.page, Page::Loading));
         assert!(model.error_message.is_none());
 
         let event = cmd.expect_one_event();
         assert_eq!(event, Event::Initialize);
+    }
+
+    #[test]
+    fn navigate_from_loading_is_noop() {
+        let app = TodoApp;
+        let mut model = Model::default();
+
+        let mut cmd = app.update(Event::Navigate(Route::TodoList), &mut model);
+
+        assert!(matches!(model.page, Page::Loading));
+        assert!(cmd.is_done());
+    }
+
+    #[test]
+    fn navigate_from_todo_list_is_noop() {
+        let app = TodoApp;
+        let mut model = Model {
+            page: Page::TodoList,
+            ..Model::default()
+        };
+
+        let mut cmd = app.update(Event::Navigate(Route::TodoList), &mut model);
+
+        assert!(matches!(model.page, Page::TodoList));
+        assert!(cmd.is_done());
     }
 
     // ── DataSaved ───────────────────────────────────────────────────

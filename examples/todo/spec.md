@@ -75,12 +75,15 @@ so changes made by other clients appear automatically.
 ## Views
 
 - **Loading** -- shown while local data is loaded from Key-Value storage on
-  startup. No user interaction is possible.
+  startup. No user interaction is possible. Internal state -- not shell-navigable.
 - **Error** -- shown when Key-Value data loading fails. Displays an error
-  message and a "Retry" button that re-attempts initialization.
+  message and a "Retry" button. The shell sends a navigate event to return
+  to the Todo List; the core handles re-initialization. Internal state -- not
+  shell-navigable directly (reached only via failed initialization).
 - **Todo List** -- the main view showing the input, item list, filters, sync
-  status, and footer. In-page sync errors (e.g. going offline) are shown as
-  status fields within this view, not as a separate error page.
+  status, and footer. Shell-navigable (the only navigable destination in this
+  app). In-page sync errors (e.g. going offline) are shown as status fields
+  within this view, not as a separate error page.
 
 ## Capabilities
 

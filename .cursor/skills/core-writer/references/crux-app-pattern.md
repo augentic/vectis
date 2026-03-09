@@ -74,6 +74,7 @@ use serde::{Deserialize, Serialize};
 #[repr(C)]
 pub enum Event {
     // Shell-facing events (user actions)
+    Navigate(Route),
     Increment,
     Decrement,
     Reset,
@@ -89,6 +90,8 @@ pub enum Event {
 Rules:
 - Derive `Facet, Serialize, Deserialize` for FFI compatibility.
 - Add `#[repr(C)]` for `facet` enum layout.
+- Include `Navigate(Route)` for shell-initiated view changes (see **Shell-initiated
+  navigation** under Page Management).
 - Internal variants with non-serializable payloads (like `crux_http::Result`) must have
   `#[serde(skip)]` and `#[facet(skip)]`.
 - Mark opaque fields inside skipped variants with `#[facet(opaque)]`.
@@ -204,10 +207,13 @@ Event::DataLoaded(Err(e)) => {
     model.error_message = Some(format!("Failed to load data: {e}"));
     render()
 }
-Event::Retry => {
-    model.page = Page::Loading;
-    model.error_message = None;
-    Command::event(Event::Initialize)
+Event::Navigate(Route::Main) => match model.page {
+    Page::Error => {
+        model.page = Page::Loading;
+        model.error_message = None;
+        Command::event(Event::Initialize)
+    }
+    _ => Command::done(),
 }
 ```
 
@@ -236,6 +242,72 @@ Rules:
 - The `Page` enum and `ViewModel` enum variants should have a 1:1 correspondence.
 - For single-page apps, the ViewModel enum has a single variant wrapping the page's
   view struct. A `Loading` variant is recommended when the app loads data on startup.
+
+### Shell-initiated navigation
+
+The shell can request view changes via an `Event::Navigate(Route)` event. The
+`Route` enum is a shell-facing type that enumerates navigable destinations --
+typically a subset of `Page`, excluding internal states like `Loading` and `Error`.
+
+```rust
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    Main,
+    Settings,
+    ItemDetail(String),
+}
+```
+
+Add a shell-facing event variant:
+
+```rust
+pub enum Event {
+    Navigate(Route),
+    // ... other events
+}
+```
+
+The `update()` handler maps `Route` to `Page`, taking current state into account.
+The core decides what action is required -- it may need to load data, clear error
+state, or simply switch the page:
+
+```rust
+Event::Navigate(route) => {
+    match route {
+        Route::Main => match model.page {
+            Page::Error => {
+                model.page = Page::Loading;
+                model.error_message = None;
+                Command::event(Event::Initialize)
+            }
+            Page::Loading => Command::done(),
+            Page::Main => Command::done(),
+        },
+        Route::Settings => {
+            model.page = Page::Settings;
+            render()
+        }
+        Route::ItemDetail(id) => {
+            model.selected_item_id = Some(id);
+            model.page = Page::ItemDetail;
+            render()
+        }
+    }
+}
+```
+
+Rules:
+- `Route` derives `Facet, Serialize, Deserialize` and has `#[repr(C)]` -- it crosses FFI.
+- `Route` variants represent **user-navigable destinations** only. Internal states
+  (Loading, Error) are not `Route` variants -- the core transitions to those
+  automatically.
+- The `Navigate` handler must be state-aware: navigating to a view that requires
+  data may trigger a load sequence rather than an immediate page switch.
+- `Route` can carry payload for parameterised views (e.g. `ItemDetail(String)` for
+  a detail screen that needs an item ID).
+- Use cases: deep links, back button, tab bar, push notification opens.
 
 ## Effect
 

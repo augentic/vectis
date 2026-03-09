@@ -53,9 +53,10 @@ the spec is too ambiguous to proceed.
 |---|---|---|
 | **App struct name** | PascalCase noun from the Overview section | `TodoApp`, `NoteEditor`, `Counter` |
 | **Model** | Internal state fields from Data Model section | `todos: Vec<Todo>`, `filter: Filter` |
-| **Event** | User actions from Features + internal callback variants from Capabilities | `AddTodo(String)`, `Fetched(Result<...>)` |
+| **Event** | User actions from Features + internal callback variants from Capabilities + `Navigate(Route)` | `AddTodo(String)`, `Fetched(Result<...>)`, `Navigate(Route)` |
 | **ViewModel variants** | One variant per view from the Views section | `ViewModel::Loading`, `ViewModel::TodoList(TodoListView)` |
 | **Page (internal)** | Internal enum mirroring ViewModel variants, tracked in Model | `Page::Loading`, `Page::TodoList` |
+| **Route (shell-facing)** | Navigable views from Views section (excludes internal states) | `Route::TodoList`, `Route::Settings` |
 | **Per-page view structs** | Display data for each view from User Interface section | `TodoListView { items, count }`, `ErrorView { message }` |
 | **Capabilities** | Explicitly listed in Capabilities section (see below) | Render + HTTP + KV |
 
@@ -121,18 +122,25 @@ Before writing any code, design these types on paper:
 2. **Page (internal)** -- an enum with one variant per view. Derives `Default` only
    (no `Facet`, no `Serialize`). The `#[default]` variant is the initial view
    (typically `Loading`). Add to Model as `page: Page`.
-3. **Event** -- split into shell-facing variants (serializable, sent by UI) and
+3. **Route (shell-facing)** -- an enum enumerating user-navigable destinations.
+   Derives `Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq`
+   and has `#[repr(C)]`. Includes only content views the shell can navigate to
+   (excludes internal states like `Loading` and `Error`). Use `#[default]` on the
+   primary content view. Can carry payload for parameterised views
+   (e.g. `ItemDetail(String)`).
+4. **Event** -- split into shell-facing variants (serializable, sent by UI) and
    internal variants (marked `#[serde(skip)]` `#[facet(skip)]`, used as effect callbacks).
-4. **ViewModel** -- an enum with `#[repr(C)]`. One variant per view, matching the
+   Include a `Navigate(Route)` shell-facing variant for shell-initiated view changes.
+5. **ViewModel** -- an enum with `#[repr(C)]`. One variant per view, matching the
    `Page` enum 1:1. Variants without data (e.g. `Loading`) have no payload; variants
    with data wrap a per-page view struct. Derive `Facet, Serialize, Deserialize,
    Clone, Debug, Default`.
-5. **Per-page view structs** -- one struct per ViewModel variant that carries data
+6. **Per-page view structs** -- one struct per ViewModel variant that carries data
    (e.g. `MainView`, `ErrorView`). Derive `Facet, Serialize, Deserialize, Clone,
    Debug, Default`. All fields are `pub`. Use `String` for formatted display values.
    `ErrorView` should have `message: String` and `can_retry: bool`.
-6. **Effect** -- one variant per capability. Annotate with `#[effect(facet_typegen)]`.
-7. **Supporting types** -- domain structs/enums used in Model, Event, or per-page
+7. **Effect** -- one variant per capability. Annotate with `#[effect(facet_typegen)]`.
+8. **Supporting types** -- domain structs/enums used in Model, Event, or per-page
    view structs.
 
 Consult `references/crux-app-pattern.md` for type conventions.
@@ -235,20 +243,28 @@ This is the heart of the application. Follow `references/crux-app-pattern.md`:
 1. Define supporting types (domain structs/enums)
 2. Define internal `Page` enum with `#[derive(Default)]` and `#[default]` on the
    initial variant (typically `Loading`)
-3. Define `Model` with `#[derive(Default)]`, including a `page: Page` field
-4. Define per-page view structs (e.g. `MainView`, `ErrorView`) with
+3. Define `Route` enum (shell-facing navigable destinations) with
+   `#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]`
+   and `#[repr(C)]`. Include only user-navigable content views (exclude `Loading`,
+   `Error`). Use `#[default]` on the primary content view.
+4. Define `Model` with `#[derive(Default)]`, including a `page: Page` field
+5. Define per-page view structs (e.g. `MainView`, `ErrorView`) with
    `#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]`
-5. Define `ViewModel` as an enum with `#[derive(Facet, Serialize, Deserialize,
+6. Define `ViewModel` as an enum with `#[derive(Facet, Serialize, Deserialize,
    Clone, Debug, Default)]` and `#[repr(C)]`. One variant per page, wrapping the
    corresponding per-page view struct (or no payload for data-less views like `Loading`)
-6. Define `Event` with shell and internal variants
-7. Define `Effect` enum with `#[effect(facet_typegen)]`
-8. If using HTTP, add type alias: `type Http = crux_http::Http<Effect, Event>;`
-9. If using KV, add type alias: `type KeyValue = crux_kv::KeyValue<Effect, Event>;`
-10. Implement `App` trait with `update()` and `view()`. The `view()` function must
+7. Define `Event` with shell and internal variants. Include a `Navigate(Route)`
+   shell-facing variant for shell-initiated view changes.
+8. Define `Effect` enum with `#[effect(facet_typegen)]`
+9. If using HTTP, add type alias: `type Http = crux_http::Http<Effect, Event>;`
+10. If using KV, add type alias: `type KeyValue = crux_kv::KeyValue<Effect, Event>;`
+11. Implement `App` trait with `update()` and `view()`. The `view()` function must
     match on `model.page` and return the corresponding `ViewModel` variant.
-11. Write `#[cfg(test)] mod tests` with at least one test per Event variant, plus
+    The `Navigate(route)` arm must be state-aware: navigating to a view that
+    requires data may trigger a load sequence rather than an immediate page switch.
+12. Write `#[cfg(test)] mod tests` with at least one test per Event variant, plus
     tests verifying page transitions (e.g. `Loading` -> main view after data loads)
+    and navigation events (e.g. Navigate from Error triggers re-initialization)
 
 For `update()` logic, consult `references/crux-command-api.md` for command patterns.
 For testing, consult `references/crux-testing-patterns.md`.
@@ -412,8 +428,8 @@ For each category, classify every item into one of four buckets:
 Walk through the categories in this order, since later categories depend on earlier ones:
 
 1. **Capabilities** -- added or removed capabilities affect Effect, Event, imports, and deps.
-2. **Views** -- added or removed views affect `Page` enum, `ViewModel` enum, per-page
-   view structs, and `view()` match arms.
+2. **Views** -- added or removed views affect `Page` enum, `Route` enum (if navigable),
+   `ViewModel` enum, per-page view structs, `Navigate` handler, and `view()` match arms.
 3. **Domain types** -- new or changed structs/enums affect Model, Event payloads, and API shapes.
 4. **Model fields** -- new state fields may be needed before events can reference them.
 5. **Event variants** -- added/removed/modified user actions and internal callbacks.
@@ -431,8 +447,9 @@ Edit `app.rs` to reflect the structural changes identified in U4. Work top-down
 through the file:
 
 1. Add, remove, or modify **domain types** (structs, enums, and their fields/variants).
-2. Add or remove **Page variants** in `enum Page` and corresponding **ViewModel variants**
-   in `enum ViewModel`. Add or remove per-page view structs as needed.
+2. Add or remove **Page variants** in `enum Page`, corresponding **ViewModel variants**
+   in `enum ViewModel`, and **Route variants** in `enum Route` (for navigable views).
+   Add or remove per-page view structs as needed.
 3. Add or remove **Model fields** (ensure new fields have `Default` values).
 4. Add, remove, or modify **per-page view struct fields**.
 5. Add or remove **Event variants** -- new shell-facing variants go in the shell
@@ -517,6 +534,8 @@ mode diff analysis (step U4) to systematically identify what changed.
 | **Data Model** (state) | `struct Model` fields | `app.rs` `struct Model` | New/changed/removed state fields |
 | **Views** | `enum ViewModel` variants | `app.rs` `enum ViewModel` | New/removed/renamed views |
 | **Views** | `enum Page` variants | `app.rs` `enum Page` | New/removed/renamed internal page states |
+| **Views** | `enum Route` variants | `app.rs` `enum Route` | New/removed navigable destinations |
+| **Views** | `Event::Navigate` match arm | `app.rs` `fn update()` | Changed navigation handling |
 | **Views** | `fn view()` match arms | `app.rs` `fn view()` | New/removed page-to-view mappings |
 | **User Interface** | Per-page view struct fields | `app.rs` per-page structs | New/changed/removed display data |
 | **User Interface** | `fn view()` body | `app.rs` `fn view()` | Changed model-to-view mapping |
@@ -542,20 +561,24 @@ when applying changes in steps U5--U7.
    if the view carries data.
 3. Define the per-page view struct with `Facet, Serialize, Deserialize, Clone, Debug,
    Default` derives.
-4. Add a match arm in `view()` that maps the new `Page` variant to the new `ViewModel`
+4. If the view is user-navigable (not an internal state like Loading/Error), add a
+   variant to `enum Route` and a match arm in the `Event::Navigate(route)` handler.
+5. Add a match arm in `view()` that maps the new `Page` variant to the new `ViewModel`
    variant.
-5. Add page transition logic in the relevant `update()` arms (`model.page = Page::NewView`).
-6. If the view has user interactions, add shell-facing Event variants for them.
-7. Write tests verifying the page transition and the view output.
+6. Add page transition logic in the relevant `update()` arms (`model.page = Page::NewView`).
+7. If the view has user interactions, add shell-facing Event variants for them.
+8. Write tests verifying the page transition, navigation, and the view output.
 
 ### Removing a view
 
 1. Remove all `update()` arms that transition to the removed `Page` variant.
-2. Remove the match arm from `view()`.
-3. Remove the `Page` variant.
-4. Remove the `ViewModel` variant and its per-page view struct.
-5. Remove any Event variants that were exclusive to the removed view.
-6. Remove related tests.
+2. If the view had a `Route` variant, remove it from `enum Route` and from the
+   `Navigate` match arm.
+3. Remove the match arm from `view()`.
+4. Remove the `Page` variant.
+5. Remove the `ViewModel` variant and its per-page view struct.
+6. Remove any Event variants that were exclusive to the removed view.
+7. Remove related tests.
 
 ### Adding a feature
 
@@ -657,7 +680,7 @@ Consult these references during generation. Do not deviate from the patterns the
 
 | Reference | Purpose |
 |---|---|
-| `references/crux-app-pattern.md` | App trait, Model, Event, ViewModel (enum), Page management, Effect type conventions |
+| `references/crux-app-pattern.md` | App trait, Model, Event, ViewModel (enum), Page management, Route/Navigate pattern, Effect type conventions |
 | `references/crux-command-api.md` | Command creation, chaining, combining, async context |
 | `references/crux-capabilities.md` | HTTP and KV capability APIs |
 | `references/crux-custom-capabilities.md` | Building custom Operation + capability (SSE example) |
@@ -671,9 +694,9 @@ See `references/examples/` for complete worked examples:
 
 | Example | Capabilities | Demonstrates |
 |---|---|---|
-| `01-simple-counter.md` | Render | Minimal app, single-view ViewModel enum, basic testing |
-| `02-http-counter.md` | Render + HTTP | Two-view pattern (Loading + Counter), API calls, optimistic updates |
-| `03-kv-notes.md` | Render + KV | Three-view pattern (Loading + NoteList + Error), local persistence, retry |
+| `01-simple-counter.md` | Render | Minimal app, single-view ViewModel enum, Route/Navigate, basic testing |
+| `02-http-counter.md` | Render + HTTP | Two-view pattern (Loading + Counter), Route/Navigate, API calls, optimistic updates |
+| `03-kv-notes.md` | Render + KV | Three-view pattern (Loading + NoteList + Error), local persistence, Navigate(Route) |
 
 ## Error Handling
 
@@ -711,6 +734,9 @@ all other items apply in both modes.
 - [ ] Every `Page` variant has a corresponding `ViewModel` variant and a match arm in `view()`
 - [ ] Every `Page` variant is reachable by at least one transition in `update()`
 - [ ] `Page` and `ViewModel` variants have a 1:1 correspondence
+- [ ] `Route` enum exists with variants for user-navigable views (excludes Loading, Error)
+- [ ] `Event::Navigate(Route)` variant exists and is handled in `update()`
+- [ ] `Navigate` handler is state-aware (considers `model.page` before transitioning)
 - [ ] Per-page view structs derive `Facet, Serialize, Deserialize, Clone, Debug, Default`
 - [ ] Effect enum uses `#[effect(facet_typegen)]`
 - [ ] `CoreFFI` uses feature-gated `uniffi` and `wasm_bindgen` attributes
@@ -739,7 +765,8 @@ all other items apply in both modes.
 - [ ] **(update)** No orphaned Model fields -- fields removed from the spec are deleted
   from `struct Model` and all references
 - [ ] **(update)** No orphaned ViewModel variants -- views removed from the spec are
-  deleted from `enum ViewModel`, `enum Page`, per-page view structs, and `view()` match arms
+  deleted from `enum ViewModel`, `enum Page`, `enum Route` (if navigable), per-page
+  view structs, `Navigate` handler, and `view()` match arms
 - [ ] **(update)** No orphaned per-page view struct fields -- fields removed from the spec
   are deleted from the struct and `view()`
 - [ ] **(update)** No orphaned internal Event variants -- if a capability was removed,

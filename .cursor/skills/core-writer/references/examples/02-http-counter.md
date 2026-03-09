@@ -117,6 +117,15 @@ enum Page {
     Counter,
 }
 
+// Route (shell-navigable destinations)
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum Route {
+    #[default]
+    Counter,
+}
+
 // Model
 
 #[derive(Default, Serialize)]
@@ -149,6 +158,7 @@ pub enum ViewModel {
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub enum Event {
+    Navigate(Route),
     Get,
     Increment,
     Decrement,
@@ -184,6 +194,13 @@ impl App for Counter {
 
     fn update(&self, event: Event, model: &mut Model) -> Command {
         match event {
+            Event::Navigate(route) => match route {
+                Route::Counter => match model.page {
+                    Page::Loading => Command::done(),
+                    Page::Counter => Command::done(),
+                },
+            },
+
             Event::Get => Http::get(API_URL)
                 .expect_json()
                 .build()

@@ -157,7 +157,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.94"
 
 [workspace.dependencies]
 crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
@@ -784,6 +784,7 @@ all other items apply in both modes.
   the workspace `Cargo.toml` to use versioned dependencies instead.
 - **`facet` version pinning**: The `facet` crate must be pinned to `"=0.31"` exactly.
   Other versions may be incompatible with `crux_core`.
+- **`uniffi` version**: Use `"0.31"` for the latest uniffi with Rust 2024 edition support.
 - **No `Capabilities` type**: The 0.17 API removes `type Capabilities` and the `caps`
   parameter from `update()`. Do not include them.
 - **`Command` has no generic parameters**: Return `Command` not `Command<Effect, Event>`.

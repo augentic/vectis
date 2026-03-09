@@ -12,59 +12,129 @@ Toolkit for building applications with a user interface.
 
 The project goals are also shared by the [CRUX](https://github.com/redbadger/crux) framework and is written in Rust, the portable, fast and safe programming language favoured by our Augentic frameworks. So this toolkit targets CRUX code generation for the core of applications.
 
-Familiarize yourself with how CRUX works by scanning the [documentation](https://docs.rs/crux_core/latest/crux_core/)
+Familiarize yourself with how CRUX works by scanning the [documentation](https://docs.rs/crux_core/latest/crux_core/).
 
-## Using the core-writer Skill
+## Creating a Crux App
 
-The `core-writer` skill generates a buildable [Crux](https://github.com/redbadger/crux) `shared` crate from a **markdown specification file** that describes your application. It produces all of the core business logic, state management, and side-effect orchestration -- no shell code (iOS, Android, Web) is generated.
+App generation uses a spec-driven workflow powered by
+[OpenSpec](https://github.com/Fission-AI/OpenSpec). Each app is an OpenSpec
+**change** that uses the shared `crux-app` schema to produce a proposal,
+app-spec, and tasks. The apply phase invokes the `core-writer` skill to
+generate a buildable `shared` crate with business logic, state management,
+side-effect orchestration, and tests. No shell code (iOS, Android, Web) is
+generated; separate skills handle those.
 
-### Quick Start
+**Prerequisites:** Install the OpenSpec CLI.
 
-1. Open this workspace in Cursor.
-2. Copy the spec template into your project and fill it out:
+```bash
+npm install -g @fission-ai/openspec@latest
+```
+
+#### Create a new app
+
+1. **Create the change.** Give it a kebab-case name describing what you are building:
 
    ```bash
-   cp .cursor/skills/core-writer/app-spec-template.md my-todo-app.md
+   openspec new change create-my-app --schema crux-app
    ```
 
-3. Edit `my-todo-app.md` to describe the app you want to build (see **What You Provide** below).
-4. Ask the agent to generate the app, passing the spec file. Reference the skill explicitly so the agent picks it up:
+   This scaffolds `openspec/changes/create-my-app/` with a `.openspec.yaml` that
+   binds it to the `crux-app` schema.
 
-   > Use the core-writer skill with `my-todo-app.md` to generate the app in `my-todo-app/`.
+2. **Generate the artifacts.** Ask the agent to propose the change:
 
-5. The skill will read the spec, derive all types and structure, and generate a complete `shared` crate with tests.
-6. Once generation finishes, `cargo check` and `cargo test` are run automatically to verify the output.
+   > /opsx:propose create-my-app
 
-### What You Provide
+   Or describe what you want and let the agent fill in the artifacts:
 
-A markdown specification file based on the template at `.cursor/skills/core-writer/app-spec-template.md`. The template contains the following sections -- fill out each one:
+   > Propose a Crux app called "Weather" that fetches forecasts from a REST API
+   > and displays them. Put it in `examples/weather`.
+
+   The agent produces three artifacts in dependency order:
+
+   | Artifact | Purpose |
+   |---|---|
+   | `proposal.md` | App concept, motivation, target directory, capabilities overview |
+   | `app-spec.md` | Full app specification in core-writer format (the contract) |
+   | `tasks.md` | Implementation checklist -- create directory, invoke core-writer, verify build |
+
+3. **Review.** Read through the artifacts in `openspec/changes/create-my-app/`.
+   Edit them by hand or ask the agent to revise before proceeding.
+
+4. **Apply.** Generate the code:
+
+   > /opsx:apply
+
+   The agent works through the tasks: copies the spec into the target directory,
+   invokes the core-writer skill in Create Mode, and verifies with `cargo check`,
+   `cargo test`, and `cargo clippy`.
+
+5. **Archive** (optional). Once you are satisfied with the output:
+
+   > /opsx:archive
+
+#### Update an existing app
+
+To modify an app that was previously generated:
+
+1. Create a new change describing the update:
+
+   ```bash
+   openspec new change update-my-app --schema crux-app
+   ```
+
+2. In the proposal, reference the existing app and describe what is changing.
+
+3. In the app-spec, provide the **full desired state** of the application (not
+   a diff). The core-writer skill compares the spec against the existing code
+   and makes targeted edits in Update Mode.
+
+4. Apply and verify as above.
+
+#### Creating multiple apps
+
+The `crux-app` schema is the shared orchestration. Each app is simply a
+different change, all following the same workflow:
+
+```bash
+openspec new change create-todo-app     --schema crux-app
+openspec new change create-weather-app  --schema crux-app
+openspec new change create-notes-app    --schema crux-app
+```
+
+The default `spec-driven` schema remains available for non-Crux changes to the
+project (e.g. documentation, tooling, infrastructure).
+
+#### Check status
+
+```bash
+# List all active changes
+openspec list
+
+# See artifact completion for a specific change
+openspec status --change create-my-app
+```
+
+## Spec Format
+
+The app-spec artifact follows a markdown format. A template is at
+`.cursor/skills/core-writer/app-spec-template.md`. Required sections:
 
 | Section | What to include |
 |---|---|
 | **Overview** | App name and a one-line summary of its purpose. |
-| **Features** | Every user action and its expected outcome (e.g. "Add item -- user enters text and taps Add; a new item appears"). |
-| **Data Model** | The internal state the app tracks (e.g. "a list of items, each with id, title, and completed flag"). |
-| **User Interface** | What the user sees -- focus on data displayed, not visual styling. |
-| **Capabilities** | Which external capabilities the app needs (HTTP, Key-Value storage, Timer, SSE, Platform). |
-| **API Details** | If the app uses HTTP: endpoints, methods, request/response shapes. Remove if not applicable. |
-| **Business Rules** | Validation rules, constraints, or edge-case behaviour. Remove if none. |
-
-You can optionally specify a project directory (defaults to the current directory).
-
-### What Gets Generated
-
-| Artifact | Description |
-|---|---|
-| `Cargo.toml` (workspace root) | Workspace manifest with pinned Crux git dependencies |
-| `rust-toolchain.toml` | Rust toolchain targeting iOS, Android, macOS, and WASM |
-| `shared/Cargo.toml` | Crate manifest with detected capabilities and feature gates |
-| `shared/src/app.rs` | App trait implementation: Model, Event, ViewModel, Effect, `update()`, `view()`, and tests |
-| `shared/src/ffi.rs` | FFI scaffolding for UniFFI and wasm-bindgen |
-| `shared/src/lib.rs` | Module wiring and re-exports |
+| **Features** | Every user action and its expected outcome. |
+| **Data Model** | The internal state the app tracks. |
+| **User Interface** | What the user sees on each view -- focus on data, not styling. |
+| **Views** | Every distinct screen/page. Note which are shell-navigable vs internal. |
+| **Capabilities** | Which external capabilities the app needs (see table below). |
+| **API Details** | HTTP endpoints, methods, request/response shapes. Omit if no HTTP. |
+| **Business Rules** | Validation rules, constraints, edge-case behaviour. Omit if none. |
 
 ### Capabilities
 
-The skill detects which Crux capabilities your app needs from the **Capabilities** section of your spec file:
+The skill detects which Crux capabilities your app needs from the
+**Capabilities** section of your spec:
 
 | Capability | When to include |
 |---|---|
@@ -75,49 +145,36 @@ The skill detects which Crux capabilities your app needs from the **Capabilities
 | **Platform** (`crux_platform`) | App needs to detect the runtime platform or OS |
 | **SSE / Streaming** (custom) | App subscribes to server-sent events or live data streams |
 
-### Examples
+## What Gets Generated
 
-Simple counter (no side effects) -- `counter-spec.md`:
+| Artifact | Description |
+|---|---|
+| `Cargo.toml` (workspace root) | Workspace manifest with pinned Crux git dependencies |
+| `clippy.toml` | Clippy configuration for allowed duplicate crates |
+| `rust-toolchain.toml` | Rust toolchain targeting iOS, Android, macOS, and WASM |
+| `spec.md` | Copy of the app specification used to generate (or update) the core |
+| `shared/Cargo.toml` | Crate manifest with detected capabilities and feature gates |
+| `shared/src/app.rs` | App trait implementation: Model, Event, ViewModel, Effect, `update()`, `view()`, and tests |
+| `shared/src/ffi.rs` | FFI scaffolding for UniFFI and wasm-bindgen |
+| `shared/src/lib.rs` | Module wiring and re-exports |
 
-```markdown
-# App Specification: Counter
+Custom capability modules (e.g. `shared/src/sse.rs` for Server-Sent Events)
+are generated when needed.
 
-## Overview
-A minimal counter app with increment and decrement buttons.
+## Examples
 
-## Features
-- **Increment** -- user taps "+"; the count increases by one.
-- **Decrement** -- user taps "-"; the count decreases by one.
-- **Reset** -- user taps "Reset"; the count returns to zero.
+The `examples/` directory contains generated apps:
 
-## Data Model
-- A single integer count, starting at zero.
-
-## User Interface
-- The current count displayed as text (e.g. "Count is: 3").
-- Three buttons: "+", "-", and "Reset".
-
-## Capabilities
-| Capability | Needed? | Details |
-|---|---|---|
-| **HTTP** | No | |
-| **Key-Value storage** | No | |
-| **Timer / Time** | No | |
-| **Server-Sent Events** | No | |
-| **Platform detection** | No | |
-```
-
-> Use core-writer with `counter-spec.md` to generate the app in `my-counter/`.
-
-Notes app with local persistence -- create a spec file describing notes CRUD with Key-Value storage marked "Yes".
-
-Weather dashboard with HTTP -- create a spec file with the API Details section describing the weather endpoint.
+| Directory | Description |
+|---|---|
+| `examples/todo` | Offline-first to-do list with sync, SSE, and conflict resolution |
 
 ## Developer Setup
 
 - [Install Rust](https://rust-lang.org/tools/install/)
 - [Install Cursor](https://cursor.com/home)
 - Install the [Rust Analyzer](https://open-vsx.org/extension/rust-lang/rust-analyzer) Cursor extension
+- Install [OpenSpec](https://github.com/Fission-AI/OpenSpec) for the spec-driven workflow: `npm install -g @fission-ai/openspec@latest`
 
 ### iOS/MacOS Development
 

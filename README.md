@@ -24,7 +24,7 @@ The `core-writer` skill generates a buildable [Crux](https://github.com/redbadge
 2. Copy the spec template into your project and fill it out:
 
    ```bash
-   cp skills/core-writer/app-spec-template.md my-todo-app.md
+   cp .cursor/skills/core-writer/app-spec-template.md my-todo-app.md
    ```
 
 3. Edit `my-todo-app.md` to describe the app you want to build (see **What You Provide** below).
@@ -37,7 +37,7 @@ The `core-writer` skill generates a buildable [Crux](https://github.com/redbadge
 
 ### What You Provide
 
-A markdown specification file based on the template at `skills/core-writer/app-spec-template.md`. The template contains the following sections -- fill out each one:
+A markdown specification file based on the template at `.cursor/skills/core-writer/app-spec-template.md`. The template contains the following sections -- fill out each one:
 
 | Section | What to include |
 |---|---|

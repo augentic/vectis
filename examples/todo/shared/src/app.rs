@@ -90,6 +90,16 @@ struct DeletedItemPayload {
     id: String,
 }
 
+// ── Page (internal) ─────────────────────────────────────────────────────
+
+#[derive(Default)]
+enum Page {
+    #[default]
+    Loading,
+    TodoList,
+    Error,
+}
+
 // ── View model ──────────────────────────────────────────────────────────
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -100,7 +110,7 @@ pub struct TodoItemView {
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
-pub struct ViewModel {
+pub struct TodoListView {
     pub items: Vec<TodoItemView>,
     pub input_text: String,
     pub active_count: String,
@@ -110,10 +120,26 @@ pub struct ViewModel {
     pub show_clear_completed: bool,
 }
 
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ErrorView {
+    pub message: String,
+    pub can_retry: bool,
+}
+
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+#[repr(C)]
+pub enum ViewModel {
+    #[default]
+    Loading,
+    TodoList(TodoListView),
+    Error(ErrorView),
+}
+
 // ── Model ───────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 pub struct Model {
+    page: Page,
     items: Vec<TodoItem>,
     pending_ops: Vec<PendingOp>,
     /// The item ID of the currently in-flight sync operation, used to remove
@@ -124,6 +150,7 @@ pub struct Model {
     sync_status: SyncStatus,
     sse_state: SseConnectionState,
     input_text: String,
+    error_message: Option<String>,
 }
 
 // ── Effects ─────────────────────────────────────────────────────────────
@@ -144,6 +171,7 @@ pub enum Effect {
 pub enum Event {
     // Shell-facing
     Initialize,
+    Retry,
     SetInput(String),
     AddTodo(String, String),
     EditTitle(String, String, String),
@@ -256,6 +284,12 @@ impl App for TodoApp {
     fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         match event {
             Event::Initialize => KeyValue::get("todo_state").then_send(Event::DataLoaded),
+
+            Event::Retry => {
+                model.page = Page::Loading;
+                model.error_message = None;
+                Command::event(Event::Initialize)
+            }
 
             Event::SetInput(text) => {
                 model.input_text = text;
@@ -388,6 +422,7 @@ impl App for TodoApp {
                     serde_json::from_slice(&bytes).unwrap_or_default();
                 model.items = state.items;
                 model.pending_ops = state.pending_ops;
+                model.page = Page::TodoList;
                 Command::all([
                     render(),
                     Command::event(Event::ConnectSse),
@@ -395,8 +430,15 @@ impl App for TodoApp {
                 ])
             }
 
-            Event::DataLoaded(Ok(None) | Err(_)) => {
+            Event::DataLoaded(Ok(None)) => {
+                model.page = Page::TodoList;
                 Command::all([render(), Command::event(Event::ConnectSse)])
+            }
+
+            Event::DataLoaded(Err(e)) => {
+                model.page = Page::Error;
+                model.error_message = Some(format!("Failed to load data: {e}"));
+                render()
             }
 
             Event::DataSaved(_) => Command::done(),
@@ -471,38 +513,47 @@ impl App for TodoApp {
     }
 
     fn view(&self, model: &Self::Model) -> Self::ViewModel {
-        let filtered_items: Vec<TodoItemView> = model
-            .items
-            .iter()
-            .filter(|item| match model.filter {
-                Filter::All => true,
-                Filter::Active => !item.completed,
-                Filter::Completed => item.completed,
-            })
-            .map(|item| TodoItemView {
-                id: item.id.clone(),
-                title: item.title.clone(),
-                completed: item.completed,
-            })
-            .collect();
+        match model.page {
+            Page::Loading => ViewModel::Loading,
+            Page::Error => ViewModel::Error(ErrorView {
+                message: model.error_message.clone().unwrap_or_default(),
+                can_retry: true,
+            }),
+            Page::TodoList => {
+                let filtered_items: Vec<TodoItemView> = model
+                    .items
+                    .iter()
+                    .filter(|item| match model.filter {
+                        Filter::All => true,
+                        Filter::Active => !item.completed,
+                        Filter::Completed => item.completed,
+                    })
+                    .map(|item| TodoItemView {
+                        id: item.id.clone(),
+                        title: item.title.clone(),
+                        completed: item.completed,
+                    })
+                    .collect();
 
-        let active_count = model.items.iter().filter(|i| !i.completed).count();
+                let active_count = model.items.iter().filter(|i| !i.completed).count();
 
-        ViewModel {
-            items: filtered_items,
-            input_text: model.input_text.clone(),
-            active_count: format!(
-                "{active_count} item{} left",
-                if active_count == 1 { "" } else { "s" }
-            ),
-            pending_count: model.pending_ops.len(),
-            sync_status: match model.sync_status {
-                SyncStatus::Idle => "synced".to_string(),
-                SyncStatus::Syncing => "syncing".to_string(),
-                SyncStatus::Offline => format!("{} pending", model.pending_ops.len()),
-            },
-            filter: model.filter.clone(),
-            show_clear_completed: model.items.iter().any(|i| i.completed),
+                ViewModel::TodoList(TodoListView {
+                    items: filtered_items,
+                    input_text: model.input_text.clone(),
+                    active_count: format!(
+                        "{active_count} item{} left",
+                        if active_count == 1 { "" } else { "s" }
+                    ),
+                    pending_count: model.pending_ops.len(),
+                    sync_status: match model.sync_status {
+                        SyncStatus::Idle => "synced".to_string(),
+                        SyncStatus::Syncing => "syncing".to_string(),
+                        SyncStatus::Offline => format!("{} pending", model.pending_ops.len()),
+                    },
+                    filter: model.filter.clone(),
+                    show_clear_completed: model.items.iter().any(|i| i.completed),
+                })
+            }
         }
     }
 }
@@ -584,6 +635,7 @@ mod tests {
 
     fn seeded_model() -> Model {
         Model {
+            page: Page::TodoList,
             items: vec![
                 make_item("a", "Buy milk", false, "2025-01-01T00:00:00Z"),
                 make_item("b", "Walk dog", true, "2025-01-01T00:00:00Z"),
@@ -790,7 +842,9 @@ mod tests {
         let app = TodoApp;
         let model = seeded_model();
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert!(view.show_clear_completed);
     }
 
@@ -798,11 +852,14 @@ mod tests {
     fn view_hide_clear_completed_when_none_completed() {
         let app = TodoApp;
         let model = Model {
+            page: Page::TodoList,
             items: vec![make_item("a", "Active", false, "t")],
             ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert!(!view.show_clear_completed);
     }
 
@@ -821,7 +878,7 @@ mod tests {
     // ── DataLoaded ──────────────────────────────────────────────────
 
     #[test]
-    fn data_loaded_with_state_restores_items() {
+    fn data_loaded_with_state_restores_items_and_transitions_to_todo_list() {
         let app = TodoApp;
         let mut model = Model::default();
 
@@ -835,15 +892,58 @@ mod tests {
 
         assert_eq!(model.items.len(), 1);
         assert_eq!(model.items[0].title, "Persisted");
+        assert!(matches!(model.page, Page::TodoList));
     }
 
     #[test]
-    fn data_loaded_with_none_starts_empty() {
+    fn data_loaded_with_none_transitions_to_empty_todo_list() {
         let app = TodoApp;
         let mut model = Model::default();
 
         let _cmd = app.update(Event::DataLoaded(Ok(None)), &mut model);
         assert!(model.items.is_empty());
+        assert!(matches!(model.page, Page::TodoList));
+    }
+
+    #[test]
+    fn data_loaded_error_transitions_to_error_view() {
+        let app = TodoApp;
+        let mut model = Model::default();
+
+        let mut cmd = app.update(
+            Event::DataLoaded(Err(KeyValueError::Io {
+                message: "corrupt".to_string(),
+            })),
+            &mut model,
+        );
+
+        assert!(matches!(model.page, Page::Error));
+        assert!(model.error_message.is_some());
+        cmd.expect_one_effect().expect_render();
+
+        let ViewModel::Error(view) = app.view(&model) else {
+            panic!("expected Error view");
+        };
+        assert!(view.can_retry);
+        assert!(view.message.contains("corrupt"));
+    }
+
+    #[test]
+    fn retry_from_error_reinitializes() {
+        let app = TodoApp;
+        let mut model = Model {
+            page: Page::Error,
+            error_message: Some("failed".to_string()),
+            ..Model::default()
+        };
+
+        let mut cmd = app.update(Event::Retry, &mut model);
+
+        assert!(matches!(model.page, Page::Loading));
+        assert!(model.error_message.is_none());
+
+        let event = cmd.expect_one_event();
+        assert_eq!(event, Event::Initialize);
     }
 
     // ── DataSaved ───────────────────────────────────────────────────
@@ -961,9 +1061,18 @@ mod tests {
     // ── View ────────────────────────────────────────────────────────
 
     #[test]
+    fn initial_view_is_loading() {
+        let app = TodoApp;
+        let model = Model::default();
+
+        assert!(matches!(app.view(&model), ViewModel::Loading));
+    }
+
+    #[test]
     fn view_filters_active_items() {
         let app = TodoApp;
         let model = Model {
+            page: Page::TodoList,
             items: vec![
                 make_item("a", "Active", false, "t"),
                 make_item("b", "Done", true, "t"),
@@ -972,7 +1081,9 @@ mod tests {
             ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert_eq!(view.items.len(), 1);
         assert_eq!(view.items[0].title, "Active");
     }
@@ -981,6 +1092,7 @@ mod tests {
     fn view_filters_completed_items() {
         let app = TodoApp;
         let model = Model {
+            page: Page::TodoList,
             items: vec![
                 make_item("a", "Active", false, "t"),
                 make_item("b", "Done", true, "t"),
@@ -989,7 +1101,9 @@ mod tests {
             ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert_eq!(view.items.len(), 1);
         assert_eq!(view.items[0].title, "Done");
     }
@@ -998,6 +1112,7 @@ mod tests {
     fn view_shows_correct_active_count() {
         let app = TodoApp;
         let model = Model {
+            page: Page::TodoList,
             items: vec![
                 make_item("a", "A", false, "t"),
                 make_item("b", "B", true, "t"),
@@ -1006,7 +1121,9 @@ mod tests {
             ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert_eq!(view.active_count, "2 items left");
     }
 
@@ -1014,11 +1131,14 @@ mod tests {
     fn view_singular_item_count() {
         let app = TodoApp;
         let model = Model {
+            page: Page::TodoList,
             items: vec![make_item("a", "A", false, "t")],
             ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
         assert_eq!(view.active_count, "1 item left");
     }
 
@@ -1027,23 +1147,35 @@ mod tests {
         let app = TodoApp;
 
         let model = Model {
+            page: Page::TodoList,
             sync_status: SyncStatus::Idle,
             ..Model::default()
         };
-        assert_eq!(app.view(&model).sync_status, "synced");
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
+        assert_eq!(view.sync_status, "synced");
 
         let model = Model {
+            page: Page::TodoList,
             sync_status: SyncStatus::Syncing,
             ..Model::default()
         };
-        assert_eq!(app.view(&model).sync_status, "syncing");
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
+        assert_eq!(view.sync_status, "syncing");
 
         let model = Model {
+            page: Page::TodoList,
             sync_status: SyncStatus::Offline,
             pending_ops: vec![PendingOp::Create(make_item("x", "X", false, "t"))],
             ..Model::default()
         };
-        assert_eq!(app.view(&model).sync_status, "1 pending");
+        let ViewModel::TodoList(view) = app.view(&model) else {
+            panic!("expected TodoList view");
+        };
+        assert_eq!(view.sync_status, "1 pending");
     }
 
     // ── Conflict resolution ─────────────────────────────────────────

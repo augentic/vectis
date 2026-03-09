@@ -90,13 +90,27 @@ use facet::Facet;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
+enum Page {
+    #[default]
+    Counter,
+}
+
+#[derive(Default)]
 pub struct Model {
+    page: Page,
     count: isize,
 }
 
 #[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ViewModel {
+pub struct CounterView {
     pub count: String,
+}
+
+#[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
+#[repr(C)]
+pub enum ViewModel {
+    #[default]
+    Counter(CounterView),
 }
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -132,8 +146,10 @@ impl App for Counter {
     }
 
     fn view(&self, model: &Self::Model) -> Self::ViewModel {
-        ViewModel {
-            count: format!("Count is: {}", model.count),
+        match model.page {
+            Page::Counter => ViewModel::Counter(CounterView {
+                count: format!("Count is: {}", model.count),
+            }),
         }
     }
 }
@@ -148,7 +164,7 @@ mod tests {
         let app = Counter;
         let model = Model::default();
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model);
         assert_eq!(view.count, "Count is: 0");
     }
 
@@ -162,7 +178,7 @@ mod tests {
 
         cmd.expect_one_effect().expect_render();
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model);
         assert_eq!(view.count, "Count is: 1");
     }
 
@@ -176,21 +192,24 @@ mod tests {
 
         cmd.expect_one_effect().expect_render();
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model);
         assert_eq!(view.count, "Count is: -1");
     }
 
     #[test]
     fn reset_sets_count_to_zero() {
         let app = Counter;
-        let mut model = Model { count: 42 };
+        let mut model = Model {
+            count: 42,
+            ..Model::default()
+        };
 
         let mut cmd = app.update(Event::Reset, &mut model);
         assert_eq!(model.count, 0);
 
         cmd.expect_one_effect().expect_render();
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model);
         assert_eq!(view.count, "Count is: 0");
     }
 
@@ -206,7 +225,7 @@ mod tests {
 
         assert_eq!(model.count, 2);
 
-        let view = app.view(&model);
+        let ViewModel::Counter(view) = app.view(&model);
         assert_eq!(view.count, "Count is: 2");
     }
 }

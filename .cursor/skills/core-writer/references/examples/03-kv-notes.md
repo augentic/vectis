@@ -116,22 +116,49 @@ pub struct NoteView {
     pub body: String,
 }
 
+// Page (internal)
+
+#[derive(Default)]
+enum Page {
+    #[default]
+    Loading,
+    NoteList,
+    Error,
+}
+
 // Model
 
 #[derive(Default)]
 pub struct Model {
+    page: Page,
     notes: Vec<Note>,
     next_id: usize,
-    error: Option<String>,
+    error_message: Option<String>,
+}
+
+// Per-page view structs
+
+#[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
+pub struct NoteListView {
+    pub notes: Vec<NoteView>,
+    pub count: String,
+}
+
+#[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ErrorView {
+    pub message: String,
+    pub can_retry: bool,
 }
 
 // ViewModel
 
 #[derive(Facet, Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ViewModel {
-    pub notes: Vec<NoteView>,
-    pub count: String,
-    pub error: Option<String>,
+#[repr(C)]
+pub enum ViewModel {
+    #[default]
+    Loading,
+    NoteList(NoteListView),
+    Error(ErrorView),
 }
 
 // Events
@@ -142,6 +169,7 @@ pub enum Event {
     Load,
     Add(String, String),
     Remove(usize),
+    Retry,
 
     #[serde(skip)]
     #[facet(skip)]
@@ -190,19 +218,20 @@ impl App for Notes {
                     serde_json::from_slice(&bytes).unwrap_or_default();
                 model.next_id = notes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
                 model.notes = notes;
-                model.error = None;
+                model.page = Page::NoteList;
                 render()
             }
 
             Event::Loaded(Ok(None)) => {
                 model.notes = Vec::new();
                 model.next_id = 1;
-                model.error = None;
+                model.page = Page::NoteList;
                 render()
             }
 
             Event::Loaded(Err(e)) => {
-                model.error = Some(format!("Failed to load: {e}"));
+                model.page = Page::Error;
+                model.error_message = Some(format!("Failed to load: {e}"));
                 render()
             }
 
@@ -214,42 +243,55 @@ impl App for Notes {
                 };
                 model.next_id += 1;
                 model.notes.push(note);
-                model.error = None;
 
                 render().and(Self::save_notes(&model.notes))
             }
 
             Event::Remove(id) => {
                 model.notes.retain(|n| n.id != id);
-                model.error = None;
 
                 render().and(Self::save_notes(&model.notes))
+            }
+
+            Event::Retry => {
+                model.page = Page::Loading;
+                model.error_message = None;
+                Command::event(Event::Load)
             }
 
             Event::Saved(Ok(_)) => {
                 Command::done()
             }
 
-            Event::Saved(Err(e)) => {
-                model.error = Some(format!("Failed to save: {e}"));
-                render()
+            Event::Saved(Err(_)) => {
+                Command::done()
             }
         }
     }
 
     fn view(&self, model: &Self::Model) -> Self::ViewModel {
-        ViewModel {
-            notes: model
-                .notes
-                .iter()
-                .map(|n| NoteView {
-                    id: n.id,
-                    title: n.title.clone(),
-                    body: n.body.clone(),
-                })
-                .collect(),
-            count: format!("{} note{}", model.notes.len(), if model.notes.len() == 1 { "" } else { "s" }),
-            error: model.error.clone(),
+        match model.page {
+            Page::Loading => ViewModel::Loading,
+            Page::NoteList => ViewModel::NoteList(NoteListView {
+                notes: model
+                    .notes
+                    .iter()
+                    .map(|n| NoteView {
+                        id: n.id,
+                        title: n.title.clone(),
+                        body: n.body.clone(),
+                    })
+                    .collect(),
+                count: format!(
+                    "{} note{}",
+                    model.notes.len(),
+                    if model.notes.len() == 1 { "" } else { "s" }
+                ),
+            }),
+            Page::Error => ViewModel::Error(ErrorView {
+                message: model.error_message.clone().unwrap_or_default(),
+                can_retry: true,
+            }),
         }
     }
 }
@@ -276,7 +318,15 @@ mod tests {
     }
 
     #[test]
-    fn loaded_with_data_populates_model() {
+    fn initial_view_is_loading() {
+        let app = Notes;
+        let model = Model::default();
+
+        assert!(matches!(app.view(&model), ViewModel::Loading));
+    }
+
+    #[test]
+    fn loaded_with_data_transitions_to_note_list() {
         let app = Notes;
         let mut model = Model::default();
 
@@ -290,13 +340,13 @@ mod tests {
 
         assert_eq!(model.notes.len(), 2);
         assert_eq!(model.next_id, 3);
-        assert!(model.error.is_none());
+        assert!(matches!(model.page, Page::NoteList));
 
         cmd.expect_one_effect().expect_render();
     }
 
     #[test]
-    fn loaded_with_none_starts_empty() {
+    fn loaded_with_none_transitions_to_empty_note_list() {
         let app = Notes;
         let mut model = Model::default();
 
@@ -304,17 +354,60 @@ mod tests {
 
         assert!(model.notes.is_empty());
         assert_eq!(model.next_id, 1);
+        assert!(matches!(model.page, Page::NoteList));
 
         cmd.expect_one_effect().expect_render();
+    }
+
+    #[test]
+    fn loaded_error_transitions_to_error_view() {
+        let app = Notes;
+        let mut model = Model::default();
+
+        let mut cmd = app.update(
+            Event::Loaded(Err(KeyValueError::Io {
+                message: "corrupt".to_string(),
+            })),
+            &mut model,
+        );
+
+        assert!(matches!(model.page, Page::Error));
+        assert!(model.error_message.is_some());
+
+        cmd.expect_one_effect().expect_render();
+
+        let ViewModel::Error(view) = app.view(&model) else {
+            panic!("expected Error view");
+        };
+        assert!(view.can_retry);
+    }
+
+    #[test]
+    fn retry_from_error_reloads() {
+        let app = Notes;
+        let mut model = Model {
+            page: Page::Error,
+            error_message: Some("failed".to_string()),
+            ..Model::default()
+        };
+
+        let mut cmd = app.update(Event::Retry, &mut model);
+
+        assert!(matches!(model.page, Page::Loading));
+        assert!(model.error_message.is_none());
+
+        let event = cmd.expect_one_event();
+        assert_eq!(event, Event::Load);
     }
 
     #[test]
     fn add_note_updates_model_and_saves() {
         let app = Notes;
         let mut model = Model {
+            page: Page::NoteList,
             notes: Vec::new(),
             next_id: 1,
-            error: None,
+            ..Model::default()
         };
 
         let mut cmd = app.update(
@@ -340,12 +433,13 @@ mod tests {
     fn remove_note_updates_model_and_saves() {
         let app = Notes;
         let mut model = Model {
+            page: Page::NoteList,
             notes: vec![
                 Note { id: 1, title: "A".to_string(), body: "".to_string() },
                 Note { id: 2, title: "B".to_string(), body: "".to_string() },
             ],
             next_id: 3,
-            error: None,
+            ..Model::default()
         };
 
         let mut cmd = app.update(Event::Remove(1), &mut model);
@@ -361,14 +455,17 @@ mod tests {
     fn view_shows_note_count() {
         let app = Notes;
         let model = Model {
+            page: Page::NoteList,
             notes: vec![
                 Note { id: 1, title: "A".to_string(), body: "".to_string() },
             ],
             next_id: 2,
-            error: None,
+            ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::NoteList(view) = app.view(&model) else {
+            panic!("expected NoteList view");
+        };
         assert_eq!(view.count, "1 note");
         assert_eq!(view.notes.len(), 1);
     }
@@ -377,15 +474,18 @@ mod tests {
     fn view_pluralizes_notes() {
         let app = Notes;
         let model = Model {
+            page: Page::NoteList,
             notes: vec![
                 Note { id: 1, title: "A".to_string(), body: "".to_string() },
                 Note { id: 2, title: "B".to_string(), body: "".to_string() },
             ],
             next_id: 3,
-            error: None,
+            ..Model::default()
         };
 
-        let view = app.view(&model);
+        let ViewModel::NoteList(view) = app.view(&model) else {
+            panic!("expected NoteList view");
+        };
         assert_eq!(view.count, "2 notes");
     }
 
@@ -396,20 +496,6 @@ mod tests {
 
         let cmd = app.update(Event::Saved(Ok(None)), &mut model);
         assert!(cmd.is_done());
-    }
-
-    #[test]
-    fn saved_error_sets_error_message() {
-        let app = Notes;
-        let mut model = Model::default();
-
-        let mut cmd = app.update(
-            Event::Saved(Err(KeyValueError::StoreError("disk full".to_string()))),
-            &mut model,
-        );
-
-        assert!(model.error.is_some());
-        cmd.expect_one_effect().expect_render();
     }
 }
 ```

@@ -36,7 +36,8 @@ The spec file must contain the following sections:
 | **Overview** | App name and one-line summary | App struct name |
 | **Features** | User actions and expected outcomes | Shell-facing Event variants |
 | **Data Model** | Internal state to track | Model fields and supporting types |
-| **User Interface** | What the UI displays | ViewModel fields |
+| **User Interface** | What each view displays | Per-page view struct fields |
+| **Views** | Distinct screens/pages the user sees | `ViewModel` enum variants + per-page view structs |
 | **Capabilities** | External I/O the app needs | Effect variants and capability crates |
 | **API Details** | HTTP endpoints, request/response shapes (if applicable) | HTTP call sites, response types |
 | **Business Rules** | Validation, constraints, edge cases | Validation logic in `update()` |
@@ -53,7 +54,9 @@ the spec is too ambiguous to proceed.
 | **App struct name** | PascalCase noun from the Overview section | `TodoApp`, `NoteEditor`, `Counter` |
 | **Model** | Internal state fields from Data Model section | `todos: Vec<Todo>`, `filter: Filter` |
 | **Event** | User actions from Features + internal callback variants from Capabilities | `AddTodo(String)`, `Fetched(Result<...>)` |
-| **ViewModel** | Display data from User Interface section | `items: Vec<TodoView>`, `count: String` |
+| **ViewModel variants** | One variant per view from the Views section | `ViewModel::Loading`, `ViewModel::TodoList(TodoListView)` |
+| **Page (internal)** | Internal enum mirroring ViewModel variants, tracked in Model | `Page::Loading`, `Page::TodoList` |
+| **Per-page view structs** | Display data for each view from User Interface section | `TodoListView { items, count }`, `ErrorView { message }` |
 | **Capabilities** | Explicitly listed in Capabilities section (see below) | Render + HTTP + KV |
 
 ### Capability Detection
@@ -100,7 +103,8 @@ Read the spec file at the path provided by the user. Extract:
 - State that needs to be tracked (from **Data Model** -> Model)
 - Actions the user can take (from **Features** -> shell-facing Event variants)
 - Side-effects needed (from **Capabilities** -> Effect variants and internal Event variants)
-- What the UI needs to show (from **User Interface** -> ViewModel)
+- What the UI needs to show (from **User Interface** -> per-page view structs)
+- Distinct screens/pages (from **Views** -> ViewModel enum variants, internal Page enum)
 - API shapes (from **API Details** -> HTTP call sites and response types)
 - Validation and constraints (from **Business Rules** -> logic in `update()`)
 
@@ -112,14 +116,24 @@ guessing.
 
 Before writing any code, design these types on paper:
 
-1. **Model** -- all internal state. Use newtypes and enums for domain concepts.
-   Fields should be `pub(crate)` unless needed externally.
-2. **Event** -- split into shell-facing variants (serializable, sent by UI) and
+1. **Model** -- all internal state, including a `page: Page` field. Use newtypes and
+   enums for domain concepts. Fields should be `pub(crate)` unless needed externally.
+2. **Page (internal)** -- an enum with one variant per view. Derives `Default` only
+   (no `Facet`, no `Serialize`). The `#[default]` variant is the initial view
+   (typically `Loading`). Add to Model as `page: Page`.
+3. **Event** -- split into shell-facing variants (serializable, sent by UI) and
    internal variants (marked `#[serde(skip)]` `#[facet(skip)]`, used as effect callbacks).
-3. **ViewModel** -- derive `Facet, Serialize, Deserialize, Clone, Debug, Default`.
-   Contains only data the UI needs. Use `String` for formatted display values.
-4. **Effect** -- one variant per capability. Annotate with `#[effect(facet_typegen)]`.
-5. **Supporting types** -- domain structs/enums used in Model, Event, or ViewModel.
+4. **ViewModel** -- an enum with `#[repr(C)]`. One variant per view, matching the
+   `Page` enum 1:1. Variants without data (e.g. `Loading`) have no payload; variants
+   with data wrap a per-page view struct. Derive `Facet, Serialize, Deserialize,
+   Clone, Debug, Default`.
+5. **Per-page view structs** -- one struct per ViewModel variant that carries data
+   (e.g. `MainView`, `ErrorView`). Derive `Facet, Serialize, Deserialize, Clone,
+   Debug, Default`. All fields are `pub`. Use `String` for formatted display values.
+   `ErrorView` should have `message: String` and `can_retry: bool`.
+6. **Effect** -- one variant per capability. Annotate with `#[effect(facet_typegen)]`.
+7. **Supporting types** -- domain structs/enums used in Model, Event, or per-page
+   view structs.
 
 Consult `references/crux-app-pattern.md` for type conventions.
 
@@ -219,14 +233,22 @@ Follow the template in `references/crux-project-config.md`. Key points:
 This is the heart of the application. Follow `references/crux-app-pattern.md`:
 
 1. Define supporting types (domain structs/enums)
-2. Define `Model` with `#[derive(Default)]`
-3. Define `ViewModel` with `#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]`
-4. Define `Event` with shell and internal variants
-5. Define `Effect` enum with `#[effect(facet_typegen)]`
-6. If using HTTP, add type alias: `type Http = crux_http::Http<Effect, Event>;`
-7. If using KV, add type alias: `type KeyValue = crux_kv::KeyValue<Effect, Event>;`
-8. Implement `App` trait with `update()` and `view()`
-9. Write `#[cfg(test)] mod tests` with at least one test per Event variant
+2. Define internal `Page` enum with `#[derive(Default)]` and `#[default]` on the
+   initial variant (typically `Loading`)
+3. Define `Model` with `#[derive(Default)]`, including a `page: Page` field
+4. Define per-page view structs (e.g. `MainView`, `ErrorView`) with
+   `#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]`
+5. Define `ViewModel` as an enum with `#[derive(Facet, Serialize, Deserialize,
+   Clone, Debug, Default)]` and `#[repr(C)]`. One variant per page, wrapping the
+   corresponding per-page view struct (or no payload for data-less views like `Loading`)
+6. Define `Event` with shell and internal variants
+7. Define `Effect` enum with `#[effect(facet_typegen)]`
+8. If using HTTP, add type alias: `type Http = crux_http::Http<Effect, Event>;`
+9. If using KV, add type alias: `type KeyValue = crux_kv::KeyValue<Effect, Event>;`
+10. Implement `App` trait with `update()` and `view()`. The `view()` function must
+    match on `model.page` and return the corresponding `ViewModel` variant.
+11. Write `#[cfg(test)] mod tests` with at least one test per Event variant, plus
+    tests verifying page transitions (e.g. `Loading` -> main view after data loads)
 
 For `update()` logic, consult `references/crux-command-api.md` for command patterns.
 For testing, consult `references/crux-testing-patterns.md`.
@@ -361,10 +383,12 @@ item by name:
 | Category | What to extract | Where to find it |
 |---|---|---|
 | Domain types | Struct/enum names, fields, derives | Top of `app.rs` |
-| Model fields | Field names, types | `struct Model` in `app.rs` |
+| Model fields | Field names, types (including `page: Page`) | `struct Model` in `app.rs` |
+| Page variants | Variant names | `enum Page` in `app.rs` |
 | Shell-facing Event variants | Variant names, payload types | `enum Event` (non-skipped) in `app.rs` |
 | Internal Event variants | Variant names, payload types | `enum Event` (`#[serde(skip)]`) in `app.rs` |
-| ViewModel fields | Field names, types | `struct ViewModel` in `app.rs` |
+| ViewModel variants | Variant names, wrapped view struct types | `enum ViewModel` in `app.rs` |
+| Per-page view structs | Struct names, field names, types | Per-page structs in `app.rs` |
 | Effect variants | Variant names, operation types | `enum Effect` in `app.rs` |
 | Capability type aliases | Alias names | `type Http = ...`, `type KeyValue = ...` in `app.rs` |
 | `update()` arms | Event variant -> behavior summary | `fn update()` match block in `app.rs` |
@@ -388,13 +412,15 @@ For each category, classify every item into one of four buckets:
 Walk through the categories in this order, since later categories depend on earlier ones:
 
 1. **Capabilities** -- added or removed capabilities affect Effect, Event, imports, and deps.
-2. **Domain types** -- new or changed structs/enums affect Model, Event payloads, and API shapes.
-3. **Model fields** -- new state fields may be needed before events can reference them.
-4. **Event variants** -- added/removed/modified user actions and internal callbacks.
-5. **ViewModel fields** -- changes in what the UI displays.
-6. **API shapes** -- changed endpoints, request/response bodies.
-7. **Business rules** -- changed validation or logic in `update()` arms.
-8. **`view()` logic** -- changes driven by ViewModel or Model field changes.
+2. **Views** -- added or removed views affect `Page` enum, `ViewModel` enum, per-page
+   view structs, and `view()` match arms.
+3. **Domain types** -- new or changed structs/enums affect Model, Event payloads, and API shapes.
+4. **Model fields** -- new state fields may be needed before events can reference them.
+5. **Event variants** -- added/removed/modified user actions and internal callbacks.
+6. **Per-page view struct fields** -- changes in what individual views display.
+7. **API shapes** -- changed endpoints, request/response bodies.
+8. **Business rules** -- changed validation or logic in `update()` arms.
+9. **`view()` logic** -- changes driven by view struct, Model, or Page changes.
 
 After completing the diff, output a summary listing every added, removed, and
 modified item before making any edits. This summary serves as the edit plan.
@@ -405,9 +431,11 @@ Edit `app.rs` to reflect the structural changes identified in U4. Work top-down
 through the file:
 
 1. Add, remove, or modify **domain types** (structs, enums, and their fields/variants).
-2. Add or remove **Model fields** (ensure new fields have `Default` values).
-3. Add, remove, or modify **ViewModel fields** and supporting view types.
-4. Add or remove **Event variants** -- new shell-facing variants go in the shell
+2. Add or remove **Page variants** in `enum Page` and corresponding **ViewModel variants**
+   in `enum ViewModel`. Add or remove per-page view structs as needed.
+3. Add or remove **Model fields** (ensure new fields have `Default` values).
+4. Add, remove, or modify **per-page view struct fields**.
+5. Add or remove **Event variants** -- new shell-facing variants go in the shell
    section; new internal variants go in the internal section with `#[serde(skip)]`
    and `#[facet(skip)]`.
 5. Add or remove **Effect variants** and update capability **type aliases**.
@@ -434,8 +462,9 @@ Edit the `update()` and `view()` functions in `app.rs`:
    functions.
 5. For **changed API shapes**, update HTTP call construction (URL, body struct,
    method) and response handling.
-6. Update `view()` if ViewModel fields were added, removed, or their derivation
-   from Model changed.
+6. Update `view()` if Page variants, ViewModel variants, or per-page view struct
+   fields were added, removed, or their derivation from Model changed. Every `Page`
+   variant must have a corresponding match arm in `view()`.
 7. Add, modify, or remove **helper functions** as needed.
 
 ### U7. Update tests
@@ -486,7 +515,10 @@ mode diff analysis (step U4) to systematically identify what changed.
 | **Features** | `update()` match arms | `app.rs` `fn update()` | New/removed/changed handler logic |
 | **Data Model** (entities) | Domain structs and enums | `app.rs` top section | New/changed/removed fields or types |
 | **Data Model** (state) | `struct Model` fields | `app.rs` `struct Model` | New/changed/removed state fields |
-| **User Interface** | `struct ViewModel` fields | `app.rs` `struct ViewModel` | New/changed/removed display data |
+| **Views** | `enum ViewModel` variants | `app.rs` `enum ViewModel` | New/removed/renamed views |
+| **Views** | `enum Page` variants | `app.rs` `enum Page` | New/removed/renamed internal page states |
+| **Views** | `fn view()` match arms | `app.rs` `fn view()` | New/removed page-to-view mappings |
+| **User Interface** | Per-page view struct fields | `app.rs` per-page structs | New/changed/removed display data |
 | **User Interface** | `fn view()` body | `app.rs` `fn view()` | Changed model-to-view mapping |
 | **Capabilities** | `enum Effect` variants | `app.rs` `enum Effect` | Added/removed capabilities |
 | **Capabilities** | Type aliases (`type Http = ...`) | `app.rs` top section | Added/removed aliases |
@@ -503,13 +535,35 @@ mode diff analysis (step U4) to systematically identify what changed.
 Common change patterns and which code elements they touch. Use this as a checklist
 when applying changes in steps U5--U7.
 
+### Adding a view
+
+1. Add a new variant to `enum Page`.
+2. Add a corresponding variant to `enum ViewModel`, wrapping a new per-page view struct
+   if the view carries data.
+3. Define the per-page view struct with `Facet, Serialize, Deserialize, Clone, Debug,
+   Default` derives.
+4. Add a match arm in `view()` that maps the new `Page` variant to the new `ViewModel`
+   variant.
+5. Add page transition logic in the relevant `update()` arms (`model.page = Page::NewView`).
+6. If the view has user interactions, add shell-facing Event variants for them.
+7. Write tests verifying the page transition and the view output.
+
+### Removing a view
+
+1. Remove all `update()` arms that transition to the removed `Page` variant.
+2. Remove the match arm from `view()`.
+3. Remove the `Page` variant.
+4. Remove the `ViewModel` variant and its per-page view struct.
+5. Remove any Event variants that were exclusive to the removed view.
+6. Remove related tests.
+
 ### Adding a feature
 
 1. Add a new shell-facing Event variant to `enum Event`.
 2. Add a match arm in `update()` with the handler logic.
 3. If the feature needs new state, add a field to `Model` (with a `Default` value).
-4. If the feature produces new display data, add a field to `ViewModel` and update
-   `view()`.
+4. If the feature produces new display data, add a field to the relevant per-page
+   view struct and update the corresponding match arm in `view()`.
 5. Write at least one test for the new Event variant.
 
 ### Removing a feature
@@ -518,7 +572,7 @@ when applying changes in steps U5--U7.
 2. Remove the match arm from `update()`.
 3. Remove any Model fields that are now unused (not referenced by any remaining
    event handler or `view()`).
-4. Remove any ViewModel fields that are now unused.
+4. Remove any per-page view struct fields that are now unused.
 5. Remove tests for the removed Event variant.
 6. Check for helper functions that are now unused and remove them.
 
@@ -603,7 +657,7 @@ Consult these references during generation. Do not deviate from the patterns the
 
 | Reference | Purpose |
 |---|---|
-| `references/crux-app-pattern.md` | App trait, Model, Event, ViewModel, Effect type conventions |
+| `references/crux-app-pattern.md` | App trait, Model, Event, ViewModel (enum), Page management, Effect type conventions |
 | `references/crux-command-api.md` | Command creation, chaining, combining, async context |
 | `references/crux-capabilities.md` | HTTP and KV capability APIs |
 | `references/crux-custom-capabilities.md` | Building custom Operation + capability (SSE example) |
@@ -617,9 +671,9 @@ See `references/examples/` for complete worked examples:
 
 | Example | Capabilities | Demonstrates |
 |---|---|---|
-| `01-simple-counter.md` | Render | Minimal app, state updates, basic testing |
-| `02-http-counter.md` | Render + HTTP | API calls, optimistic updates, effect testing |
-| `03-kv-notes.md` | Render + KV | Local persistence, serialization, CRUD |
+| `01-simple-counter.md` | Render | Minimal app, single-view ViewModel enum, basic testing |
+| `02-http-counter.md` | Render + HTTP | Two-view pattern (Loading + Counter), API calls, optimistic updates |
+| `03-kv-notes.md` | Render + KV | Three-view pattern (Loading + NoteList + Error), local persistence, retry |
 
 ## Error Handling
 
@@ -652,7 +706,12 @@ all other items apply in both modes.
 - [ ] Every Event variant is handled in `update()`
 - [ ] Every `update()` branch returns a `Command` (not `()`)
 - [ ] Internal Event variants have `#[serde(skip)]` and `#[facet(skip)]`
-- [ ] `ViewModel` derives `Facet, Serialize, Deserialize, Clone, Debug, Default`
+- [ ] `ViewModel` is an enum with `#[repr(C)]` and derives `Facet, Serialize, Deserialize,
+  Clone, Debug, Default`
+- [ ] Every `Page` variant has a corresponding `ViewModel` variant and a match arm in `view()`
+- [ ] Every `Page` variant is reachable by at least one transition in `update()`
+- [ ] `Page` and `ViewModel` variants have a 1:1 correspondence
+- [ ] Per-page view structs derive `Facet, Serialize, Deserialize, Clone, Debug, Default`
 - [ ] Effect enum uses `#[effect(facet_typegen)]`
 - [ ] `CoreFFI` uses feature-gated `uniffi` and `wasm_bindgen` attributes
 - [ ] Type aliases defined for each capability: `type Http = crux_http::Http<Effect, Event>;`
@@ -679,8 +738,10 @@ all other items apply in both modes.
   the `update()` match block
 - [ ] **(update)** No orphaned Model fields -- fields removed from the spec are deleted
   from `struct Model` and all references
-- [ ] **(update)** No orphaned ViewModel fields -- fields removed from the spec are
-  deleted from `struct ViewModel` and `view()`
+- [ ] **(update)** No orphaned ViewModel variants -- views removed from the spec are
+  deleted from `enum ViewModel`, `enum Page`, per-page view structs, and `view()` match arms
+- [ ] **(update)** No orphaned per-page view struct fields -- fields removed from the spec
+  are deleted from the struct and `view()`
 - [ ] **(update)** No orphaned internal Event variants -- if a capability was removed,
   its callback Event variants and match arms are also removed
 - [ ] **(update)** No orphaned Effect variants or type aliases for removed capabilities

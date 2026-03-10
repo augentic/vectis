@@ -23,21 +23,21 @@ pub struct TodoItem {
     pub id: String,
     pub title: String,
     pub completed: bool,
-    pub updated_at: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PendingOp {
     Create(TodoItem),
     Update(TodoItem),
-    Delete(String),
+    Delete { id: String, deleted_at: String },
 }
 
 impl PendingOp {
     fn item_id(&self) -> &str {
         match self {
             Self::Create(item) | Self::Update(item) => &item.id,
-            Self::Delete(id) => id,
+            Self::Delete { id, .. } => id,
         }
     }
 }
@@ -84,7 +84,6 @@ pub enum SseConnectionState {
 struct PersistedState {
     items: Vec<TodoItem>,
     pending_ops: Vec<PendingOp>,
-    next_local_id: u64,
 }
 
 /// Payload for SSE `item_deleted` events.
@@ -126,7 +125,6 @@ pub struct Model {
     sse_state: SseConnectionState,
     input_text: String,
     error_message: Option<String>,
-    next_local_id: u64,
 }
 
 // ── Per-page view structs ──
@@ -175,11 +173,11 @@ pub enum Event {
     Initialize,
     Navigate(Route),
     SetInput(String),
-    AddTodo,
-    EditTitle(String, String),
-    ToggleCompleted(String),
-    DeleteTodo(String),
-    ClearCompleted,
+    AddTodo(String, String),
+    EditTitle(String, String, String),
+    ToggleCompleted(String, String),
+    DeleteTodo(String, String),
+    ClearCompleted(String),
     SetFilter(Filter),
     RetrySync,
     ConnectSse,
@@ -233,7 +231,6 @@ fn save_state(model: &Model) -> Command<Effect, Event> {
     let state = PersistedState {
         items: model.items.clone(),
         pending_ops: model.pending_ops.clone(),
-        next_local_id: model.next_local_id,
     };
     let bytes = serde_json::to_vec(&state).expect("serializing PersistedState");
     KeyValue::set(STORAGE_KEY, bytes).then_send(Event::DataSaved)
@@ -278,7 +275,7 @@ fn start_sync(model: &mut Model) -> Command<Effect, Event> {
                 .build()
                 .then_send(Event::OpResponse)
         }
-        PendingOp::Delete(id) => Http::delete(format!("{API_URL}/api/todos/{id}"))
+        PendingOp::Delete { id, .. } => Http::delete(format!("{API_URL}/api/todos/{id}"))
             .expect_string()
             .build()
             .then_send(Event::DeleteOpResponse),
@@ -306,18 +303,15 @@ fn apply_server_item(model: &mut Model, server_item: &TodoItem) {
             .items
             .iter()
             .find(|i| i.id == server_item.id)
-            .is_none_or(|local_item| {
-                match (&local_item.updated_at, &server_item.updated_at) {
-                    (Some(local_ts), Some(server_ts)) => server_ts >= local_ts,
-                    _ => true,
-                }
-            });
+            .is_none_or(|local_item| server_item.updated_at >= local_item.updated_at);
 
         if server_wins {
             update_or_insert_item(&mut model.items, server_item);
-            model
-                .pending_ops
-                .retain(|op| op.item_id() != server_item.id);
+            if model.syncing_id.as_deref() != Some(&server_item.id) {
+                model
+                    .pending_ops
+                    .retain(|op| op.item_id() != server_item.id);
+            }
         }
     } else {
         update_or_insert_item(&mut model.items, server_item);
@@ -340,18 +334,15 @@ fn merge_server_items(model: &mut Model, server_items: &[TodoItem]) {
                 .items
                 .iter()
                 .find(|i| i.id == server_item.id)
-                .is_none_or(|local_item| {
-                    match (&local_item.updated_at, &server_item.updated_at) {
-                        (Some(local_ts), Some(server_ts)) => server_ts >= local_ts,
-                        _ => true,
-                    }
-                });
+                .is_none_or(|local_item| server_item.updated_at >= local_item.updated_at);
 
             if server_wins {
                 merged.push(server_item.clone());
-                model
-                    .pending_ops
-                    .retain(|op| op.item_id() != server_item.id);
+                if model.syncing_id.as_deref() != Some(&server_item.id) {
+                    model
+                        .pending_ops
+                        .retain(|op| op.item_id() != server_item.id);
+                }
             } else if let Some(local_item) =
                 model.items.iter().find(|i| i.id == server_item.id)
             {
@@ -404,18 +395,17 @@ impl App for TodoApp {
                 render()
             }
 
-            Event::AddTodo => {
+            Event::AddTodo(id, timestamp) => {
                 let title = model.input_text.trim().to_string();
                 if title.is_empty() {
                     return Command::done();
                 }
 
-                model.next_local_id += 1;
                 let item = TodoItem {
-                    id: format!("local_{}", model.next_local_id),
+                    id,
                     title,
                     completed: false,
-                    updated_at: None,
+                    updated_at: timestamp,
                 };
 
                 model.items.push(item.clone());
@@ -427,19 +417,15 @@ impl App for TodoApp {
                 render().and(save).and(sync)
             }
 
-            Event::EditTitle(id, new_title) => {
+            Event::EditTitle(id, new_title, timestamp) => {
                 let new_title = new_title.trim().to_string();
                 if new_title.is_empty() {
                     return Command::done();
                 }
                 if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
                     item.title = new_title;
-                    let updated_item = item.clone();
-
-                    model
-                        .pending_ops
-                        .retain(|op| op.item_id() != updated_item.id);
-                    model.pending_ops.push(PendingOp::Update(updated_item));
+                    item.updated_at = timestamp;
+                    model.pending_ops.push(PendingOp::Update(item.clone()));
 
                     let save = save_state(model);
                     let sync = start_sync(model);
@@ -449,15 +435,11 @@ impl App for TodoApp {
                 }
             }
 
-            Event::ToggleCompleted(id) => {
+            Event::ToggleCompleted(id, timestamp) => {
                 if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
                     item.completed = !item.completed;
-                    let updated_item = item.clone();
-
-                    model
-                        .pending_ops
-                        .retain(|op| op.item_id() != updated_item.id);
-                    model.pending_ops.push(PendingOp::Update(updated_item));
+                    item.updated_at = timestamp;
+                    model.pending_ops.push(PendingOp::Update(item.clone()));
 
                     let save = save_state(model);
                     let sync = start_sync(model);
@@ -467,17 +449,39 @@ impl App for TodoApp {
                 }
             }
 
-            Event::DeleteTodo(id) => {
+            Event::DeleteTodo(id, timestamp) => {
                 model.items.retain(|i| i.id != id);
-                model.pending_ops.retain(|op| op.item_id() != id);
-                model.pending_ops.push(PendingOp::Delete(id));
+
+                let mut saw_create = false;
+                let mut saw_non_create = false;
+                model.pending_ops.retain(|op| match op {
+                    PendingOp::Create(item) if item.id == id => {
+                        saw_create = true;
+                        false
+                    }
+                    PendingOp::Update(item) if item.id == id => {
+                        saw_non_create = true;
+                        false
+                    }
+                    PendingOp::Delete { id: d, .. } if *d == id => {
+                        saw_non_create = true;
+                        false
+                    }
+                    _ => true,
+                });
+                if !saw_create || saw_non_create {
+                    model.pending_ops.push(PendingOp::Delete {
+                        id,
+                        deleted_at: timestamp,
+                    });
+                }
 
                 let save = save_state(model);
                 let sync = start_sync(model);
                 render().and(save).and(sync)
             }
 
-            Event::ClearCompleted => {
+            Event::ClearCompleted(timestamp) => {
                 let completed_ids: Vec<String> = model
                     .items
                     .iter()
@@ -491,9 +495,31 @@ impl App for TodoApp {
 
                 model.items.retain(|i| !i.completed);
 
-                for id in &completed_ids {
-                    model.pending_ops.retain(|op| op.item_id() != id);
-                    model.pending_ops.push(PendingOp::Delete(id.clone()));
+                for id in completed_ids {
+                    let mut saw_create = false;
+                    let mut saw_non_create = false;
+                    model.pending_ops.retain(|op| match op {
+                        PendingOp::Create(item) if item.id == id => {
+                            saw_create = true;
+                            false
+                        }
+                        PendingOp::Update(item) if item.id == id => {
+                            saw_non_create = true;
+                            false
+                        }
+                        PendingOp::Delete { id: d, .. } if *d == id => {
+                            saw_non_create = true;
+                            false
+                        }
+                        _ => true,
+                    });
+                    if saw_create && !saw_non_create {
+                        continue;
+                    }
+                    model.pending_ops.push(PendingOp::Delete {
+                        id,
+                        deleted_at: timestamp.clone(),
+                    });
                 }
 
                 let save = save_state(model);
@@ -532,11 +558,15 @@ impl App for TodoApp {
             // ── Internal event handlers ──
 
             Event::DataLoaded(Ok(Some(bytes))) => {
-                let state: PersistedState =
-                    serde_json::from_slice(&bytes).unwrap_or_default();
+                let state: PersistedState = match serde_json::from_slice(&bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("Failed to deserialize persisted state: {e}");
+                        PersistedState::default()
+                    }
+                };
                 model.items = state.items;
                 model.pending_ops = state.pending_ops;
-                model.next_local_id = state.next_local_id;
                 model.page = Page::TodoList;
 
                 Command::all([
@@ -597,8 +627,11 @@ impl App for TodoApp {
                 if let Some(server_item) = response.take_body() {
                     update_or_insert_item(&mut model.items, &server_item);
                 }
-                if let Some(synced_id) = model.syncing_id.take() {
-                    model.pending_ops.retain(|op| op.item_id() != synced_id);
+                if let Some(synced_id) = model.syncing_id.take()
+                    && !model.pending_ops.is_empty()
+                    && model.pending_ops[0].item_id() == synced_id
+                {
+                    model.pending_ops.remove(0);
                 }
                 model.sync_status = SyncStatus::Idle;
 
@@ -614,8 +647,11 @@ impl App for TodoApp {
             }
 
             Event::DeleteOpResponse(Ok(_)) => {
-                if let Some(synced_id) = model.syncing_id.take() {
-                    model.pending_ops.retain(|op| op.item_id() != synced_id);
+                if let Some(synced_id) = model.syncing_id.take()
+                    && !model.pending_ops.is_empty()
+                    && model.pending_ops[0].item_id() == synced_id
+                {
+                    model.pending_ops.remove(0);
                 }
                 model.sync_status = SyncStatus::Idle;
 
@@ -645,9 +681,11 @@ impl App for TodoApp {
                             serde_json::from_slice::<DeletePayload>(&msg.data)
                         {
                             model.items.retain(|item| item.id != payload.id);
-                            model
-                                .pending_ops
-                                .retain(|op| op.item_id() != payload.id);
+                            if model.syncing_id.as_deref() != Some(payload.id.as_str()) {
+                                model
+                                    .pending_ops
+                                    .retain(|op| op.item_id() != payload.id);
+                            }
                             let save = save_state(model);
                             return render().and(save);
                         }
@@ -720,7 +758,7 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             completed,
-            updated_at: Some("2025-06-15T10:30:00Z".to_string()),
+            updated_at: "2025-06-15T10:30:00Z".to_string(),
         }
     }
 
@@ -732,7 +770,6 @@ mod tests {
                 make_item("2", "Write tests", false),
                 make_item("3", "Done task", true),
             ],
-            next_local_id: 3,
             ..Model::default()
         }
     }
@@ -769,7 +806,6 @@ mod tests {
         let state = PersistedState {
             items: vec![make_item("1", "First", false)],
             pending_ops: vec![],
-            next_local_id: 1,
         };
         let bytes = serde_json::to_vec(&state).unwrap();
 
@@ -865,10 +901,14 @@ mod tests {
         let mut model = seeded_model();
         model.input_text = "New task".to_string();
 
-        let mut cmd = app.update(Event::AddTodo, &mut model);
+        let mut cmd = app.update(
+            Event::AddTodo("local_4".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 4);
         assert_eq!(model.items[3].title, "New task");
+        assert_eq!(model.items[3].id, "local_4");
         assert!(!model.items[3].completed);
         assert!(model.input_text.is_empty());
         assert_eq!(model.pending_ops.len(), 1);
@@ -883,7 +923,10 @@ mod tests {
         let mut model = seeded_model();
         model.input_text = "   ".to_string();
 
-        let mut cmd = app.update(Event::AddTodo, &mut model);
+        let mut cmd = app.update(
+            Event::AddTodo("local_4".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 3);
         assert!(model.pending_ops.is_empty());
@@ -896,11 +939,16 @@ mod tests {
         let mut model = seeded_model();
 
         let mut cmd = app.update(
-            Event::EditTitle("1".to_string(), "Buy oat milk".to_string()),
+            Event::EditTitle(
+                "1".to_string(),
+                "Buy oat milk".to_string(),
+                "2025-06-15T11:00:00Z".to_string(),
+            ),
             &mut model,
         );
 
         assert_eq!(model.items[0].title, "Buy oat milk");
+        assert_eq!(model.items[0].updated_at, "2025-06-15T11:00:00Z");
         assert_eq!(model.pending_ops.len(), 1);
         assert!(matches!(&model.pending_ops[0], PendingOp::Update(_)));
 
@@ -913,9 +961,13 @@ mod tests {
         let mut model = seeded_model();
         assert!(!model.items[0].completed);
 
-        let mut cmd = app.update(Event::ToggleCompleted("1".to_string()), &mut model);
+        let mut cmd = app.update(
+            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert!(model.items[0].completed);
+        assert_eq!(model.items[0].updated_at, "2025-06-15T11:00:00Z");
         assert_eq!(model.pending_ops.len(), 1);
         assert!(matches!(&model.pending_ops[0], PendingOp::Update(_)));
 
@@ -927,12 +979,15 @@ mod tests {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(Event::DeleteTodo("2".to_string()), &mut model);
+        let mut cmd = app.update(
+            Event::DeleteTodo("2".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 2);
         assert!(!model.items.iter().any(|i| i.id == "2"));
         assert_eq!(model.pending_ops.len(), 1);
-        assert!(matches!(&model.pending_ops[0], PendingOp::Delete(_)));
+        assert!(matches!(&model.pending_ops[0], PendingOp::Delete { .. }));
 
         cmd.expect_effect().expect_render();
     }
@@ -942,12 +997,15 @@ mod tests {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(Event::ClearCompleted, &mut model);
+        let mut cmd = app.update(
+            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 2);
         assert!(model.items.iter().all(|i| !i.completed));
         assert_eq!(model.pending_ops.len(), 1);
-        assert!(matches!(&model.pending_ops[0], PendingOp::Delete(_)));
+        assert!(matches!(&model.pending_ops[0], PendingOp::Delete { .. }));
 
         cmd.expect_effect().expect_render();
     }
@@ -961,7 +1019,10 @@ mod tests {
             ..Model::default()
         };
 
-        let mut cmd = app.update(Event::ClearCompleted, &mut model);
+        let mut cmd = app.update(
+            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 1);
         assert!(cmd.is_done());
@@ -1133,10 +1194,7 @@ mod tests {
         let server_item = make_item("1", "Test", false);
         let mut model = Model {
             page: Page::TodoList,
-            items: vec![TodoItem {
-                updated_at: None,
-                ..server_item.clone()
-            }],
+            items: vec![server_item.clone()],
             pending_ops: vec![PendingOp::Create(server_item.clone())],
             syncing_id: Some("1".to_string()),
             sync_status: SyncStatus::Syncing,
@@ -1215,7 +1273,7 @@ mod tests {
             id: "1".to_string(),
             title: "Server title".to_string(),
             completed: true,
-            updated_at: Some("2025-06-15T12:00:00Z".to_string()),
+            updated_at: "2025-06-15T12:00:00Z".to_string(),
         };
 
         let msg = SseMessage {
@@ -1297,7 +1355,10 @@ mod tests {
         let app = TodoApp;
         let mut model = Model {
             page: Page::TodoList,
-            pending_ops: vec![PendingOp::Delete("1".to_string())],
+            pending_ops: vec![PendingOp::Delete {
+                id: "1".to_string(),
+                deleted_at: "2025-06-15T11:00:00Z".to_string(),
+            }],
             syncing_id: Some("1".to_string()),
             sync_status: SyncStatus::Syncing,
             ..Model::default()
@@ -1315,5 +1376,211 @@ mod tests {
         assert_eq!(model.sync_status, SyncStatus::Idle);
 
         cmd.expect_effect().expect_render();
+    }
+
+    // ── Edge-case tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn sse_item_updated_during_sync_preserves_pending_ops() {
+        let app = TodoApp;
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![make_item("1", "Local title", false)],
+            pending_ops: vec![PendingOp::Update(make_item("1", "Local title", false))],
+            syncing_id: Some("1".to_string()),
+            sync_status: SyncStatus::Syncing,
+            ..Model::default()
+        };
+
+        let server_item = TodoItem {
+            id: "1".to_string(),
+            title: "Server title".to_string(),
+            completed: true,
+            updated_at: "2025-06-15T12:00:00Z".to_string(),
+        };
+
+        let msg = SseMessage {
+            event: "item_updated".to_string(),
+            data: serde_json::to_vec(&server_item).unwrap(),
+        };
+
+        let _ = app.update(Event::SseReceived(msg), &mut model);
+
+        assert_eq!(model.pending_ops.len(), 1, "pending ops preserved during in-flight sync");
+    }
+
+    #[test]
+    fn sse_item_deleted_during_sync_preserves_pending_ops() {
+        let app = TodoApp;
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![make_item("1", "Test", false)],
+            pending_ops: vec![PendingOp::Update(make_item("1", "Test", false))],
+            syncing_id: Some("1".to_string()),
+            sync_status: SyncStatus::Syncing,
+            ..Model::default()
+        };
+
+        let msg = SseMessage {
+            event: "item_deleted".to_string(),
+            data: br#"{"id":"1"}"#.to_vec(),
+        };
+
+        let _ = app.update(Event::SseReceived(msg), &mut model);
+
+        assert!(model.items.is_empty(), "item removed from model");
+        assert_eq!(model.pending_ops.len(), 1, "pending ops preserved during in-flight sync");
+    }
+
+    #[test]
+    fn edit_title_empty_string_is_noop() {
+        let app = TodoApp;
+        let mut model = seeded_model();
+
+        let mut cmd = app.update(
+            Event::EditTitle(
+                "1".to_string(),
+                "   ".to_string(),
+                "2025-06-15T11:00:00Z".to_string(),
+            ),
+            &mut model,
+        );
+
+        assert_eq!(model.items[0].title, "Buy milk");
+        assert!(model.pending_ops.is_empty());
+        assert!(cmd.is_done());
+    }
+
+    #[test]
+    fn conflict_resolution_local_wins_when_newer() {
+        let app = TodoApp;
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![TodoItem {
+                id: "1".to_string(),
+                title: "Local edit".to_string(),
+                completed: false,
+                updated_at: "2025-06-15T12:00:00Z".to_string(),
+            }],
+            pending_ops: vec![PendingOp::Update(TodoItem {
+                id: "1".to_string(),
+                title: "Local edit".to_string(),
+                completed: false,
+                updated_at: "2025-06-15T12:00:00Z".to_string(),
+            })],
+            ..Model::default()
+        };
+
+        let older_server_item = TodoItem {
+            id: "1".to_string(),
+            title: "Server title".to_string(),
+            completed: true,
+            updated_at: "2025-06-15T10:00:00Z".to_string(),
+        };
+
+        let msg = SseMessage {
+            event: "item_updated".to_string(),
+            data: serde_json::to_vec(&older_server_item).unwrap(),
+        };
+
+        let _ = app.update(Event::SseReceived(msg), &mut model);
+
+        assert_eq!(model.items[0].title, "Local edit");
+        assert_eq!(model.pending_ops.len(), 1, "local wins — pending op preserved");
+    }
+
+    #[test]
+    fn clear_completed_coalesces_pending_creates() {
+        let app = TodoApp;
+        let item = TodoItem {
+            id: "local_1".to_string(),
+            title: "New item".to_string(),
+            completed: true,
+            updated_at: "2025-06-15T10:30:00Z".to_string(),
+        };
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![item.clone()],
+            pending_ops: vec![PendingOp::Create(item)],
+            ..Model::default()
+        };
+
+        let _ = app.update(
+            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
+
+        assert!(model.items.is_empty());
+        assert!(
+            model.pending_ops.is_empty(),
+            "no Delete queued for item that was never synced"
+        );
+    }
+
+    #[test]
+    fn rapid_toggle_second_update_survives_first_sync_response() {
+        let app = TodoApp;
+        let mut model = seeded_model();
+
+        // First toggle — starts sync
+        let _ = app.update(
+            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
+        assert!(model.items[0].completed);
+        assert_eq!(model.syncing_id, Some("1".to_string()));
+        assert_eq!(model.sync_status, SyncStatus::Syncing);
+        assert_eq!(model.pending_ops.len(), 1);
+
+        // Second toggle while first sync is in-flight
+        let _ = app.update(
+            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:01:00Z".to_string()),
+            &mut model,
+        );
+        assert!(!model.items[0].completed);
+        assert_eq!(model.pending_ops.len(), 2, "both ops queued");
+
+        // First sync response arrives
+        let server_item = TodoItem {
+            id: "1".to_string(),
+            title: "Buy milk".to_string(),
+            completed: true,
+            updated_at: "2025-06-15T11:00:00Z".to_string(),
+        };
+        let _ = app.update(
+            Event::OpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
+                .body(server_item)
+                .build())),
+            &mut model,
+        );
+
+        assert_eq!(
+            model.pending_ops.len(),
+            1,
+            "second toggle's op survives first sync response"
+        );
+    }
+
+    #[test]
+    fn delete_of_unsynced_item_skips_server_delete() {
+        let app = TodoApp;
+        let item = make_item("local_1", "New item", false);
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![item.clone()],
+            pending_ops: vec![PendingOp::Create(item)],
+            ..Model::default()
+        };
+
+        let _ = app.update(
+            Event::DeleteTodo("local_1".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            &mut model,
+        );
+
+        assert!(model.items.is_empty());
+        assert!(
+            model.pending_ops.is_empty(),
+            "no Delete op queued for item that was never synced"
+        );
     }
 }

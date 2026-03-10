@@ -34,7 +34,30 @@ Read the following files from `{target-dir}`:
 If `reference-dir` is provided, also read the corresponding files from the
 reference app. Differences between the two highlight potential regressions.
 
-### 2. Structural pass
+### 2. Review-fix cycle (max 3 iterations)
+
+Before starting, initialize:
+
+- `iteration = 1`, `max_iterations = 3`
+- An empty list of **accumulated design-level findings** (carried across
+  iterations)
+
+The cycle repeats: run review passes, report findings, auto-fix mechanical
+issues, then re-review the fixes. The cycle exits when no mechanical fixes
+are applied or `max_iterations` is reached.
+
+#### 2a. Select passes for this iteration
+
+**First iteration** (`iteration = 1`): Run all four passes -- structural,
+logic, quality, and comparative. This is the comprehensive initial review.
+
+**Subsequent iterations** (`iteration > 1`): Run only the **structural pass**
+and **quality pass**, scoped to files modified by the previous iteration's
+fixes. Skip the logic pass and comparative review -- mechanical fixes
+(serde derives, `render().and()`, `.trim()` checks) do not alter event
+sequences or conflict-resolution logic.
+
+#### 2b. Structural pass
 
 Read `references/crux-review-checks.md` in this skill's directory.
 
@@ -51,7 +74,7 @@ pattern-based checks that scan for known Crux-specific issues:
 For each violation found, record: check ID, file, line range, description,
 severity (Critical or Warning), and suggested fix.
 
-### 3. Logic pass (skip if scope = quick)
+#### 2c. Logic pass (first iteration only; skip if scope = quick)
 
 Read `references/logic-review-checks.md` in this skill's directory.
 
@@ -95,7 +118,7 @@ sequences, not just pattern matching. For each check:
 Record findings with severity Critical (data loss, incorrect server calls) or
 Warning (stale UI, missing tests).
 
-### 4. Quality pass
+#### 2d. Quality pass
 
 Read `references/general-review-checks.md` in this skill's directory.
 
@@ -112,7 +135,7 @@ language-level quality checks:
 
 Record findings with severity Warning or Info.
 
-### 5. Comparative review (if reference-dir provided)
+#### 2e. Comparative review (first iteration only; if reference-dir provided)
 
 Compare structural decisions between the target and reference apps:
 
@@ -124,12 +147,14 @@ Compare structural decisions between the target and reference apps:
 Flag significant divergences as Warning with a note explaining what the
 reference app does differently and why.
 
-### 6. Produce report
+#### 2f. Produce iteration report
 
-Output a structured report with the following format:
+Output the findings for this iteration. On the first iteration, use the
+full report format. On subsequent iterations, report only new findings
+discovered in re-review and note the iteration number.
 
 ```
-## Code Review Report: {app-name}
+## Code Review Report: {app-name} (iteration {N})
 
 ### Summary
 - Critical: N findings
@@ -157,9 +182,13 @@ Output a structured report with the following format:
 - Missing test for: ...
 ```
 
-### 7. Auto-fix mechanical issues
+Classify each finding as **mechanical** (auto-fixable) or **design-level**
+(requires architectural decisions). Add design-level findings to the
+accumulated list.
 
-After presenting the report, offer to auto-fix findings that are mechanical:
+#### 2g. Auto-fix mechanical issues
+
+Apply fixes for findings that are mechanical:
 
 - Adding missing `Serialize`/`Deserialize` derives
 - Wrapping returns in `render().and(...)`
@@ -171,6 +200,103 @@ confirmation -- these require design decisions.
 
 After any fixes, re-run `cargo check`, `cargo test`, and `cargo clippy` to
 verify the fixes compile and pass.
+
+#### 2h. Loop control
+
+After applying fixes and verifying:
+
+1. If **no mechanical fixes** were applied in this iteration, exit the cycle.
+2. If `iteration >= max_iterations`, exit the cycle.
+3. Otherwise, increment `iteration` and return to step 2a.
+
+When the cycle exits, output a summary across all iterations:
+
+```
+### Review Cycle Summary
+- Iteration 1: Fixed N mechanical issues (CRX-001 x3, CRX-002, CRX-005).
+  M design-level findings deferred.
+- Iteration 2: Fixed K regressions (GEN-005 from iteration 1 fix).
+  No new design-level findings.
+- Total: N+K mechanical fixes applied. M design-level findings accumulated.
+```
+
+### 3. Express accumulated design-level findings as an OpenSpec change
+
+After the review-fix cycle completes, check whether any **design-level
+findings** were accumulated -- findings that require architectural decisions,
+data-type changes, event-signature modifications, or logic rewrites
+(typically CRX-003, CRX-004, CRX-006, CRX-007, LOG-001 through LOG-008).
+If none were accumulated across any iteration, skip this step.
+
+If design-level findings exist, create a single OpenSpec change to track
+all of them:
+
+1. **Derive a change name** from the app name and append the current
+   date-time for traceability:
+
+   ```
+   review-{app-name}-{YYYY-MM-DDTHH-MM}
+   ```
+
+   Example: `review-opsx-todo-2026-03-11T14-30`
+
+   Use the shell to get the current timestamp:
+   ```bash
+   date -u +"%Y-%m-%dT%H-%M"
+   ```
+
+2. **Create the change directory**:
+   ```bash
+   openspec new change "<name>"
+   ```
+
+3. **Generate artifacts using the openspec workflow**:
+
+   Run `openspec status --change "<name>" --json` to get the artifact
+   build order. Then for each artifact in dependency order:
+
+   a. Get instructions:
+      ```bash
+      openspec instructions <artifact-id> --change "<name>" --json
+      ```
+   b. Read any completed dependency artifacts for context.
+   c. Create the artifact file using the template from instructions,
+      populated with content derived from the accumulated review findings.
+   d. Continue until all `applyRequires` artifacts are complete.
+
+4. **Content guidelines for each artifact**:
+
+   - **proposal.md**: The "Why" section summarizes the accumulated review
+     findings by severity and risk. The "What Changes" section lists each
+     design-level finding as a bullet. Note which mechanical fixes were
+     already applied across all iterations and how many review cycles ran.
+     The "Impact" section identifies affected files, shell contract changes,
+     and migration concerns.
+
+   - **design.md**: Each design-level finding becomes a Decision section
+     with rationale and alternatives considered. Group related findings
+     (e.g., all timestamp-related changes under one decision). Reference
+     the specific check IDs (CRX-xxx, LOG-xxx) that motivated each decision.
+
+   - **specs/**: Create one spec file per logical area (e.g., `sync-logic`,
+     `input-validation`). Each requirement maps to a review finding.
+     Scenarios should be derived from the simulation traces performed
+     during the logic pass (LOG-001 through LOG-008). Use WHEN/THEN format.
+
+   - **tasks.md**: Order tasks by dependency -- data-type changes first,
+     then event signatures, then handler logic, then test updates, then
+     new tests, then verification. Each task references the finding ID it
+     addresses. Include a final verification section that re-runs the
+     code-reviewer skill to confirm all Critical findings are resolved.
+
+5. **Show final status**:
+   ```bash
+   openspec status --change "<name>"
+   ```
+
+   Summarize: change name, location, artifacts created, and prompt
+   the user with "Run `/opsx:apply` or ask me to implement to start
+   working on the tasks."
 
 ## Severity Definitions
 
@@ -186,8 +312,15 @@ This skill is invoked as part of the `crux-app` schema's task list, after
 code generation and compiler verification, before archive:
 
 ```
-propose -> apply (core-writer) -> verify (cargo check/test/clippy) -> review (this skill) -> fix -> archive
+propose -> apply (core-writer) -> verify -> review-fix cycle (this skill, up to 3 iterations) -> generate change for design issues -> archive
 ```
+
+The review-fix cycle auto-fixes mechanical issues and re-reviews its own
+fixes, iterating until the code is clean or the iteration limit is reached.
+Design-level findings from all iterations are accumulated into a single
+OpenSpec change with all artifacts (proposal, design, specs, tasks) ready
+for implementation. This makes the output of a review directly actionable --
+the user can immediately run `/opsx:apply` to start fixing the issues.
 
 The tasks artifact for a crux-app change includes a Code Review section that
 invokes this skill. See the `crux-app` schema for details.

@@ -57,4 +57,4 @@
 - [x] 10.1 Run `cargo check` in `examples/opsx_todo`
 - [x] 10.2 Run `cargo test` in `examples/opsx_todo`
 - [x] 10.3 Run `cargo clippy --all-targets` in `examples/opsx_todo`
-- [x] 10.4 Run the code-reviewer skill against `examples/opsx_todo` to confirm all Critical findings are resolved
+- [x] 10.4 Run the core-reviewer skill against `examples/opsx_todo` to confirm all Critical findings are resolved

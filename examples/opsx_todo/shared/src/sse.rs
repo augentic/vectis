@@ -30,7 +30,7 @@ impl Operation for SseRequest {
 }
 
 /// An SSE message with its event type and raw data payload.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SseMessage {
     pub event: String,
     pub data: Vec<u8>,

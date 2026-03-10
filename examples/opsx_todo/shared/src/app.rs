@@ -64,7 +64,7 @@ pub enum Filter {
     Completed,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SyncStatus {
     #[default]
     Idle,
@@ -72,7 +72,7 @@ pub enum SyncStatus {
     Offline,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SseConnectionState {
     #[default]
     Disconnected,
@@ -393,7 +393,7 @@ impl App for TodoApp {
                     Page::Error => {
                         model.page = Page::Loading;
                         model.error_message = None;
-                        Command::event(Event::Initialize)
+                        render().and(Command::event(Event::Initialize))
                     }
                     Page::Loading | Page::TodoList => Command::done(),
                 },
@@ -428,6 +428,10 @@ impl App for TodoApp {
             }
 
             Event::EditTitle(id, new_title) => {
+                let new_title = new_title.trim().to_string();
+                if new_title.is_empty() {
+                    return Command::done();
+                }
                 if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
                     item.title = new_title;
                     let updated_item = item.clone();
@@ -509,16 +513,20 @@ impl App for TodoApp {
 
             Event::ConnectSse => {
                 model.sse_state = SseConnectionState::Connecting;
-                ServerSentEvents::get_events(format!("{API_URL}/api/todos/events"))
-                    .then_send(Event::SseReceived)
+                render().and(
+                    ServerSentEvents::get_events(format!("{API_URL}/api/todos/events"))
+                        .then_send(Event::SseReceived),
+                )
             }
 
             Event::SseDisconnected => {
                 model.sse_state = SseConnectionState::Disconnected;
-                Http::get(format!("{API_URL}/api/todos"))
-                    .expect_json()
-                    .build()
-                    .then_send(Event::ItemsFetched)
+                render().and(
+                    Http::get(format!("{API_URL}/api/todos"))
+                        .expect_json()
+                        .build()
+                        .then_send(Event::ItemsFetched),
+                )
             }
 
             // ── Internal event handlers ──
@@ -560,7 +568,11 @@ impl App for TodoApp {
                 render()
             }
 
-            Event::DataSaved(Ok(_) | Err(_)) => Command::done(),
+            Event::DataSaved(Ok(_)) => Command::done(),
+            Event::DataSaved(Err(e)) => {
+                log::error!("Failed to save state: {e}");
+                Command::done()
+            }
 
             Event::ItemsFetched(Ok(mut response)) => {
                 let server_items = response.take_body().unwrap_or_default();
@@ -820,6 +832,7 @@ mod tests {
         assert!(matches!(model.page, Page::Loading));
         assert!(model.error_message.is_none());
 
+        cmd.expect_effect().expect_render();
         let event = cmd.expect_one_event();
         assert_eq!(event, Event::Initialize);
     }
@@ -1245,6 +1258,7 @@ mod tests {
 
         assert_eq!(model.sse_state, SseConnectionState::Connecting);
 
+        cmd.expect_effect().expect_render();
         let request = cmd.expect_one_effect().expect_server_sent_events();
         assert_eq!(
             request.operation,
@@ -1264,6 +1278,7 @@ mod tests {
 
         assert_eq!(model.sse_state, SseConnectionState::Disconnected);
 
+        cmd.expect_effect().expect_render();
         let _request = cmd.expect_one_effect().expect_http();
     }
 

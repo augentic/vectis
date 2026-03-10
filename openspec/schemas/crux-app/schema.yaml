@@ -1,0 +1,108 @@
+name: crux-app
+version: 1
+description: Crux application generation using the core-writer skill — proposal → app-spec → tasks
+
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: App concept, motivation, and target configuration
+    template: proposal.md
+    instruction: |
+      Create a lightweight proposal for the Crux application.
+
+      Sections:
+      - **App Concept**: 1-2 sentences describing what the app does.
+      - **Motivation**: Why this app is being built (learning exercise, production need, etc.).
+      - **Target Directory**: The directory under examples/ where the generated project will live
+        (e.g., examples/opsx_todo). This determines the project-dir argument for core-writer.
+      - **Capabilities Overview**: Which Crux capabilities the app will use (HTTP, Key-Value,
+        Timer/Time, Server-Sent Events, Platform detection). Brief notes on how each is used.
+
+      Keep it concise — this is a planning document, not the full specification.
+      The detailed app spec (which drives code generation) comes next.
+    requires: []
+
+  - id: app-spec
+    generates: app-spec.md
+    description: Detailed app specification in core-writer format
+    template: app-spec.md
+    instruction: |
+      Create the detailed application specification that the core-writer skill will consume
+      to generate the Crux shared crate.
+
+      This file MUST follow the core-writer app-spec-template format exactly. It contains
+      these sections (all required):
+
+      1. **Overview** — App name and one-line summary.
+      2. **Features** — Every user action with expected outcomes. Use "**Feature name** -- description" format.
+      3. **Data Model** — All internal state the app tracks, including entity definitions.
+      4. **User Interface** — What each view displays, organized by view name as sub-headings.
+      5. **Views** — Every distinct screen/page. Indicate which are shell-navigable vs internal.
+      6. **Capabilities** — A table with rows for HTTP, Key-Value storage, Timer/Time,
+         Server-Sent Events, and Platform detection. Mark each Yes/No with details.
+      7. **API Details** — HTTP endpoints with method, URL, request/response shapes (omit if no HTTP).
+      8. **Business Rules** — Validation, constraints, edge-case behavior.
+
+      The title line must be: # App Specification: <AppName>
+
+      This file is the contract between OpenSpec and the core-writer skill.
+      It must be complete and unambiguous — the core-writer skill will generate code
+      directly from this spec with no further human input.
+
+      Reference the proposal for motivation and capability decisions.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist for generating the Crux app via core-writer
+    template: tasks.md
+    instruction: |
+      Create the implementation task list for generating the Crux application.
+
+      The tasks follow a standard pattern for all Crux apps generated via core-writer:
+
+      ## 1. Project Setup
+      - [ ] 1.1 Create the target directory (from proposal's Target Directory field)
+      - [ ] 1.2 Copy the app-spec.md artifact to <target-dir>/spec.md
+
+      ## 2. Generate Crux Core
+      - [ ] 2.1 Invoke the core-writer skill with spec-file=<target-dir>/spec.md
+            and project-dir=<target-dir>
+            (Read .cursor/skills/core-writer/SKILL.md and follow its Create Mode process)
+
+      ## 3. Verification
+      - [ ] 3.1 Run cargo check in the project directory
+      - [ ] 3.2 Run cargo test in the project directory
+      - [ ] 3.3 Run cargo clippy --all-targets in the project directory
+
+      ## 4. Code Review
+      - [ ] 4.1 Invoke the code-reviewer skill with target-dir=<target-dir>
+            and reference-dir=examples/todo (if applicable)
+            (Read .cursor/skills/code-reviewer/SKILL.md and follow its process)
+      - [ ] 4.2 Address all Critical and Warning findings
+      - [ ] 4.3 Re-run cargo check, cargo test, cargo clippy after fixes
+
+      Adapt the target directory path based on the proposal. The core-writer skill
+      handles all code generation — these tasks orchestrate invoking it and verifying output.
+    requires:
+      - app-spec
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Implement the tasks to generate the Crux application.
+
+    IMPORTANT: Task 2.1 requires using the core-writer skill. To do this:
+    1. Read the skill at .cursor/skills/core-writer/SKILL.md
+    2. Read the app-spec.md artifact from this change (it contains the full app specification)
+    3. Copy the app-spec.md content to the target directory as spec.md
+    4. Follow the core-writer skill's Create Mode process with:
+       - spec-file = <target-dir>/spec.md
+       - project-dir = <target-dir>
+
+    The core-writer skill will read its own reference documentation and generate
+    the complete shared crate. Let it handle all code generation decisions.
+
+    After generation, run the verification tasks (cargo check, test, clippy).

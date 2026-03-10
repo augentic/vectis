@@ -1,13 +1,13 @@
 ---
-name: code-reviewer
-description: Review generated Rust Crux application code for structural issues, logic bugs, and general quality problems. Use when the user wants to review, audit, or quality-check a Crux app, or after code generation to catch issues before archiving.
+name: core-reviewer
+description: Review generated Crux core (Rust shared crate) code for structural issues, logic bugs, and general quality problems. Use when the user wants to review, audit, or quality-check a Crux app's core, or after code generation to catch issues before archiving.
 ---
 
-# Crux Code Reviewer
+# Crux Core Reviewer
 
-Systematically review a generated Crux application for structural issues,
-logic bugs, and general code quality problems. Produces a severity-graded
-report with actionable findings and suggested fixes.
+Systematically review the generated Crux core (Rust `shared` crate) for
+structural issues, logic bugs, and general code quality problems. Produces
+a severity-graded report with actionable findings and suggested fixes.
 
 This skill catches semantic issues that compilers, linters, and clippy miss:
 missing `render()` calls, conflict-resolution gaps, pending-op coalescing bugs,
@@ -287,7 +287,7 @@ all of them:
      then event signatures, then handler logic, then test updates, then
      new tests, then verification. Each task references the finding ID it
      addresses. Include a final verification section that re-runs the
-     code-reviewer skill to confirm all Critical findings are resolved.
+     core-reviewer skill to confirm all Critical findings are resolved.
 
 5. **Show final status**:
    ```bash
@@ -327,6 +327,6 @@ invokes this skill. See the `crux-app` schema for details.
 
 The skill can also be invoked standalone at any time:
 
-> Use the code-reviewer skill to review `examples/my-app`
+> Use the core-reviewer skill to review `examples/my-app`
 
 > Review `examples/my-app` against `examples/todo` as a reference

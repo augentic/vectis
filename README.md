@@ -67,7 +67,7 @@ npm install -g @fission-ai/openspec@latest
 
    The agent works through the tasks: copies the spec into the target directory,
    invokes the core-writer skill in Create Mode, verifies with `cargo check`,
-   `cargo test`, and `cargo clippy`, and then runs the code-reviewer skill.
+   `cargo test`, and `cargo clippy`, and then runs the core-reviewer skill.
 
    The code review runs three passes:
    - **Structural** -- missing `render()` calls, serde derives, input validation
@@ -171,12 +171,12 @@ are generated when needed.
 
 ## Reviewing Generated Code
 
-The `code-reviewer` skill at `.cursor/skills/code-reviewer/SKILL.md`
-systematically reviews generated Crux code for issues that compilers and
-linters miss. It runs automatically as part of the apply phase but can also
-be invoked standalone:
+The `core-reviewer` skill at `.cursor/skills/core-reviewer/SKILL.md`
+systematically reviews Crux core (Rust `shared` crate) code for issues that
+compilers and linters miss. It runs automatically as part of the apply phase
+but can also be invoked standalone:
 
-> Use the code-reviewer skill to review `examples/my-app`
+> Use the core-reviewer skill to review `examples/my-app`
 
 > Review `examples/my-app` against `examples/todo` as a reference
 

@@ -2,7 +2,7 @@
 
 The `examples/opsx_todo` app was generated via the crux-app schema and
 core-writer skill as a validation exercise. A code review using the
-code-reviewer skill found that while the generated code compiles and passes
+core-reviewer skill found that while the generated code compiles and passes
 basic tests, it contains logic bugs in the sync/conflict-resolution layer
 that cause data loss under concurrent or rapid-action scenarios.
 

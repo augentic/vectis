@@ -76,6 +76,13 @@ artifacts:
       - [ ] 3.2 Run cargo test in the project directory
       - [ ] 3.3 Run cargo clippy --all-targets in the project directory
 
+      ## 4. Code Review
+      - [ ] 4.1 Invoke the code-reviewer skill with target-dir=<target-dir>
+            and reference-dir=examples/todo (if applicable)
+            (Read .cursor/skills/code-reviewer/SKILL.md and follow its process)
+      - [ ] 4.2 Address all Critical and Warning findings
+      - [ ] 4.3 Re-run cargo check, cargo test, cargo clippy after fixes
+
       Adapt the target directory path based on the proposal. The core-writer skill
       handles all code generation — these tasks orchestrate invoking it and verifying output.
     requires:

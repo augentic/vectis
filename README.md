@@ -66,8 +66,16 @@ npm install -g @fission-ai/openspec@latest
    > /opsx:apply
 
    The agent works through the tasks: copies the spec into the target directory,
-   invokes the core-writer skill in Create Mode, and verifies with `cargo check`,
-   `cargo test`, and `cargo clippy`.
+   invokes the core-writer skill in Create Mode, verifies with `cargo check`,
+   `cargo test`, and `cargo clippy`, and then runs the code-reviewer skill.
+
+   The code review runs three passes:
+   - **Structural** -- missing `render()` calls, serde derives, input validation
+   - **Logic** -- state machine completeness, operation coalescing, race conditions,
+     conflict-resolution gaps, spec gap detection
+   - **Quality** -- `unwrap()`/`expect()` in production, error handling, function length
+
+   Critical and Warning findings are addressed before proceeding.
 
 5. **Archive** (optional). Once you are satisfied with the output:
 
@@ -160,6 +168,21 @@ The skill detects which Crux capabilities your app needs from the
 
 Custom capability modules (e.g. `shared/src/sse.rs` for Server-Sent Events)
 are generated when needed.
+
+## Reviewing Generated Code
+
+The `code-reviewer` skill at `.cursor/skills/code-reviewer/SKILL.md`
+systematically reviews generated Crux code for issues that compilers and
+linters miss. It runs automatically as part of the apply phase but can also
+be invoked standalone:
+
+> Use the code-reviewer skill to review `examples/my-app`
+
+> Review `examples/my-app` against `examples/todo` as a reference
+
+The skill applies 30 checks across three categories (structural, logic, and
+quality) and produces a severity-graded report. See the skill's `references/`
+directory for the full checklist.
 
 ## Examples
 

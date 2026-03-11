@@ -1,0 +1,103 @@
+version: 1
+
+colors:
+  primary:
+    light: "#007AFF"
+    dark: "#0A84FF"
+  primaryContainer:
+    light: "#D6E4FF"
+    dark: "#003A70"
+  onPrimary:
+    light: "#FFFFFF"
+    dark: "#FFFFFF"
+  onPrimaryContainer:
+    light: "#001D36"
+    dark: "#D6E4FF"
+  secondary:
+    light: "#5856D6"
+    dark: "#5E5CE6"
+  secondaryContainer:
+    light: "#E8E0FF"
+    dark: "#2F2D6E"
+  onSecondary:
+    light: "#FFFFFF"
+    dark: "#FFFFFF"
+  onSecondaryContainer:
+    light: "#1C1B33"
+    dark: "#E8E0FF"
+  surface:
+    light: "#FFFFFF"
+    dark: "#1C1C1E"
+  surfaceSecondary:
+    light: "#F2F2F7"
+    dark: "#2C2C2E"
+  onSurface:
+    light: "#000000"
+    dark: "#FFFFFF"
+  onSurfaceSecondary:
+    light: "#3C3C43"
+    dark: "#EBEBF5"
+  error:
+    light: "#FF3B30"
+    dark: "#FF453A"
+  onError:
+    light: "#FFFFFF"
+    dark: "#FFFFFF"
+  outline:
+    light: "#C6C6C8"
+    dark: "#38383A"
+  shadow:
+    light: "#000000"
+    dark: "#000000"
+
+typography:
+  largeTitle:
+    size: 34
+    weight: bold
+  title:
+    size: 28
+    weight: bold
+  title2:
+    size: 22
+    weight: bold
+  title3:
+    size: 20
+    weight: semibold
+  headline:
+    size: 17
+    weight: semibold
+  body:
+    size: 17
+    weight: regular
+  callout:
+    size: 16
+    weight: regular
+  subheadline:
+    size: 15
+    weight: regular
+  footnote:
+    size: 13
+    weight: regular
+  caption:
+    size: 12
+    weight: regular
+  caption2:
+    size: 11
+    weight: regular
+
+spacing:
+  xxs: 2
+  xs: 4
+  sm: 8
+  md: 16
+  lg: 24
+  xl: 32
+  xxl: 48
+
+cornerRadius:
+  none: 0
+  sm: 4
+  md: 8
+  lg: 12
+  xl: 16
+  full: 9999

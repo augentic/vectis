@@ -7,8 +7,14 @@ context: |
   with a shared/ crate containing all business logic, state management, and side-effect
   orchestration. See examples/todo/ for a reference implementation.
 
-  The crux-app schema orchestrates app generation: it produces a core-writer-compatible
+  The crux-app schema orchestrates core generation: it produces a core-writer-compatible
   app-spec artifact, then the apply phase invokes the core-writer skill to generate the code.
+
+  The ios-shell schema orchestrates iOS shell generation: it produces a shell-spec artifact
+  with iOS-specific UI details, then the apply phase invokes the ios-writer skill to generate
+  SwiftUI views, Core.swift bridge, and XcodeGen project configuration. The ios-reviewer skill
+  reviews the generated shell for structural and quality issues. All iOS shells use the shared
+  VectisDesign package at design-system/ios/ for consistent styling.
 
 rules:
   app-spec:

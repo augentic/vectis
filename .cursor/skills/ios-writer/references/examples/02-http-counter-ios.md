@@ -121,11 +121,13 @@ class Core: ObservableObject {
 ## `iOS/HttpCounter/ContentView.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct ContentView: View {
     @ObservedObject var core: Core
+    @ObserveInjection var inject
 
     var body: some View {
         switch core.view {
@@ -140,6 +142,7 @@ struct ContentView: View {
                 core.update(event)
             }
         }
+        .enableInjection()
     }
 }
 ```
@@ -147,12 +150,14 @@ struct ContentView: View {
 ## `iOS/HttpCounter/Views/ErrorScreen.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct ErrorScreen: View {
     let viewModel: ErrorView
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         VStack(spacing: VectisSpacing.lg) {
@@ -181,6 +186,7 @@ struct ErrorScreen: View {
         }
         .frame(maxWidth: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 
@@ -210,12 +216,14 @@ struct ErrorScreen: View {
 ## `iOS/HttpCounter/Views/CounterScreen.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct CounterScreen: View {
     let viewModel: CounterView
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         VStack(spacing: VectisSpacing.lg) {
@@ -259,6 +267,7 @@ struct CounterScreen: View {
         }
         .frame(maxWidth: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 

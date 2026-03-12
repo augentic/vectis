@@ -38,6 +38,9 @@ projectReferences:
 packages:
   VectisDesign:
     path: ../../../design-system/ios
+  Inject:
+    url: https://github.com/krzysztofzablocki/Inject.git
+    from: "1.5.2"
 options:
   bundleIdPrefix: com.vectis.{app-name}
   deploymentTarget:
@@ -56,6 +59,7 @@ targets:
     dependencies:
       - target: Shared/shared-staticlib
       - package: VectisDesign
+      - package: Inject
     info:
       path: {AppName}/Info.plist
       properties:
@@ -68,14 +72,16 @@ targets:
       base:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        OTHER_LDFLAGS: ["-w"]
         SWIFT_OBJC_BRIDGING_HEADER: generated/sharedFFI.h
         ENABLE_USER_SCRIPT_SANDBOXING: "NO"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.vectis.{app-name}.debug
+          OTHER_LDFLAGS: ["-w", "-Xlinker", "-interposable"]
+          EMIT_FRONTEND_COMMAND_LINES: "YES"
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.vectis.{app-name}
+          OTHER_LDFLAGS: ["-w"]
     buildRules:
       - name: Generate UniFFI Bindings
         filePattern: "*.udl"
@@ -109,6 +115,10 @@ targets:
   `design-system/ios/`. Adjust based on the app's location in the repo.
 - If the app does not use UniFFI `.udl` files (uses attribute-based UniFFI
   only), remove the `buildRules` section and the `.udl` source entry.
+- The `Inject` package enables hot reloading during development. The
+  `-Xlinker -interposable` flag and `EMIT_FRONTEND_COMMAND_LINES` setting
+  are Debug-only; they are required for InjectionIII to work. In Release
+  builds Inject is a no-op stripped by LLVM.
 
 ## Makefile
 
@@ -230,3 +240,51 @@ settings:
 
 For distribution builds, configure signing identity and provisioning profile
 in the Release configuration.
+
+## Hot Reloading (Inject)
+
+The project includes [Inject](https://github.com/krzysztofzablocki/Inject)
+for hot reloading during development. Inject is a no-op in Release builds
+(stripped by LLVM), so it can remain in the codebase permanently.
+
+### Build Configuration
+
+The `project.yml` template already includes:
+
+- `Inject` SPM package dependency
+- `-Xlinker -interposable` in Debug `OTHER_LDFLAGS`
+- `EMIT_FRONTEND_COMMAND_LINES: "YES"` in Debug settings
+
+### Per-Machine Developer Setup
+
+Each developer who wants to use hot reloading must:
+
+1. Download [InjectionIII](https://github.com/nicklama/InjectionIII/releases)
+   (or install from the Mac App Store)
+2. Place it under `/Applications`
+3. Ensure the active Xcode is at `/Applications/Xcode.app`
+4. Launch InjectionIII and select the workspace via
+   "Open Project / Open Recent"
+5. On successful connection the Xcode console shows:
+   `💉 InjectionIII connected ...`
+
+### SwiftUI Integration
+
+Every SwiftUI view includes the Inject boilerplate:
+
+```swift
+import Inject
+
+struct MyScreen: View {
+    @ObserveInjection var inject
+
+    var body: some View {
+        // ... view content ...
+            .enableInjection()
+    }
+}
+```
+
+- `@ObserveInjection var inject` triggers view reload on injection.
+- `.enableInjection()` must be the outermost modifier in the body.
+- Both are no-ops in Release builds.

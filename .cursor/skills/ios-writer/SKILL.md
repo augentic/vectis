@@ -123,6 +123,9 @@ Create `{project-dir}/project.yml` following the template in
 - Calculate the relative path to `shared/shared.xcodeproj`
 - Include only the dependencies needed (VectisDesign always, SharedTypes if
   the codegen binary has been run)
+- Include the `Inject` SPM package for hot reloading (remote URL dependency)
+- Include Debug-only settings: `OTHER_LDFLAGS` with `-Xlinker -interposable`
+  and `EMIT_FRONTEND_COMMAND_LINES: "YES"` (required for InjectionIII)
 
 ### 6. Generate `Makefile`
 
@@ -174,7 +177,7 @@ For each ViewModel variant, create a screen view file in
 
 For each screen:
 
-1. Import `SwiftUI` and `VectisDesign`.
+1. Import `SwiftUI`, `VectisDesign`, and `Inject`.
 2. Accept the per-page view struct as a `let` property.
 3. Accept `let onEvent: (Event) -> Void` for user interactions.
 4. Use VectisDesign tokens for all colors, fonts, and spacing.
@@ -182,6 +185,8 @@ For each screen:
    user interaction (button tap, swipe action, pull-to-refresh, etc.).
 6. Add a `#Preview` with sample data at the bottom of the file.
 7. Add `accessibilityLabel` to interactive icons.
+8. Add `@ObserveInjection var inject` property and `.enableInjection()` as
+   the outermost modifier in the body (for hot reloading support).
 
 Consult `references/swiftui-view-patterns.md` for layout patterns (lists,
 forms, navigation, swipe actions, pull-to-refresh).
@@ -193,12 +198,14 @@ Consult `references/design-system-integration.md` for token usage.
 Create `{project-dir}/{AppName}/{AppName}App.swift`:
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 @main
 struct {AppName}App: App {
     @StateObject private var core = Core()
+    @ObserveInjection var inject
 
     var body: some Scene {
         WindowGroup {
@@ -233,6 +240,10 @@ Read all `.swift` files in `{project-dir}/{AppName}/`:
 - `Views/*.swift` -- current screen views
 - `{AppName}App.swift` -- app entry point
 
+Also check for existing Inject integration: look for `import Inject` and
+`@ObserveInjection` in view files. Record whether Inject is already present
+so step U6 knows whether to add it.
+
 ### U3. Build implementation inventory
 
 Extract from existing Swift code:
@@ -244,6 +255,7 @@ Extract from existing Swift code:
 | Screen views | `.swift` files in `Views/` |
 | Event dispatches | All `onEvent(...)` calls |
 | Design system usage | `VectisColors`, `VectisTypography`, `VectisSpacing` references |
+| Inject integration | `import Inject`, `@ObserveInjection`, `.enableInjection()` per view |
 
 ### U4. Diff analysis
 
@@ -275,11 +287,19 @@ Output the diff summary before making edits.
 - Update ContentView.swift switch to add/remove cases.
 - Update existing screen views for changed per-page view struct fields.
 - Add/remove event dispatch calls for changed Event variants.
+- If Inject is missing from any view file (including `ContentView.swift`,
+  `{AppName}App.swift`, and all screen views), add the boilerplate:
+  `import Inject`, `@ObserveInjection var inject` property, and
+  `.enableInjection()` as the outermost body modifier.
 
 ### U7. Update build configuration
 
 - Update `project.yml` if new dependencies are needed.
 - Update `Makefile` if build targets changed.
+- If `project.yml` lacks the `Inject` SPM package, add it along with the
+  `- package: Inject` target dependency, Debug-only `OTHER_LDFLAGS`
+  (`["-w", "-Xlinker", "-interposable"]`), and
+  `EMIT_FRONTEND_COMMAND_LINES: "YES"` in the Debug config.
 
 ### U8. Format and verify
 
@@ -364,6 +384,15 @@ Same as create mode step 11:
 - [ ] All spacing values use `VectisSpacing` (no magic numbers)
 - [ ] All corner radius values use `VectisCornerRadius`
 
+### Hot Reloading
+
+- [ ] `project.yml` includes `Inject` SPM package
+- [ ] `project.yml` Debug config has `OTHER_LDFLAGS` with `-Xlinker -interposable`
+- [ ] `project.yml` Debug config has `EMIT_FRONTEND_COMMAND_LINES: "YES"`
+- [ ] Every view (including ContentView and app entry point) has `import Inject`
+- [ ] Every view struct has `@ObserveInjection var inject`
+- [ ] Every view body ends with `.enableInjection()`
+
 ### Quality
 
 - [ ] Every screen view has a `#Preview` with sample data
@@ -387,3 +416,9 @@ Same as create mode step 11:
 - **Generated types**: The `SharedTypes` Swift module is produced by the
   UniFFI/codegen toolchain. If types are missing, run
   `cargo build --features uniffi` in the shared crate.
+- **Hot reloading**: All generated shells include the
+  [Inject](https://github.com/krzysztofzablocki/Inject) library for hot
+  reloading during development. Inject is a no-op in Release builds (stripped
+  by LLVM), so the boilerplate can remain permanently. Each developer must
+  install [InjectionIII](https://github.com/nicklama/InjectionIII/releases)
+  separately -- see `references/ios-project-config.md` for setup details.

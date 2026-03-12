@@ -9,11 +9,13 @@ The root content view switches on the `ViewModel` enum to display the
 appropriate screen. This is the main dispatch point.
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct ContentView: View {
     @ObservedObject var core: Core
+    @ObserveInjection var inject
 
     var body: some View {
         switch core.view {
@@ -28,6 +30,7 @@ struct ContentView: View {
                 core.update(event)
             }
         }
+        .enableInjection()
     }
 }
 ```
@@ -48,6 +51,7 @@ callback. Screens correspond 1:1 to `ViewModel` variants.
 struct MainScreen: View {
     let viewModel: MainView
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         NavigationStack {
@@ -63,6 +67,7 @@ struct MainScreen: View {
                 }
             }
         }
+        .enableInjection()
     }
 }
 ```
@@ -73,6 +78,8 @@ A simple centered indicator. No data needed from the core.
 
 ```swift
 struct LoadingScreen: View {
+    @ObserveInjection var inject
+
     var body: some View {
         VStack(spacing: VectisSpacing.md) {
             ProgressView()
@@ -83,6 +90,7 @@ struct LoadingScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 ```
@@ -95,6 +103,7 @@ Displays an error message with an optional retry button.
 struct ErrorScreen: View {
     let viewModel: ErrorView
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         VStack(spacing: VectisSpacing.lg) {
@@ -118,6 +127,7 @@ struct ErrorScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 ```
@@ -153,6 +163,7 @@ event on submit.
 struct AddItemSection: View {
     @State private var text = ""
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         HStack(spacing: VectisSpacing.sm) {
@@ -166,6 +177,7 @@ struct AddItemSection: View {
                 .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, VectisSpacing.md)
+        .enableInjection()
     }
 
     private func submit() {
@@ -202,6 +214,7 @@ For tab-based navigation:
 struct ContentView: View {
     @ObservedObject var core: Core
     @State private var selectedTab: Route = .main
+    @ObserveInjection var inject
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -216,6 +229,7 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, newTab in
             core.update(.navigate(newTab))
         }
+        .enableInjection()
     }
 }
 ```

@@ -44,6 +44,9 @@ projectReferences:
 packages:
   VectisDesign:
     path: ../../../design-system/ios
+  Inject:
+    url: https://github.com/krzysztofzablocki/Inject.git
+    from: "1.5.2"
 options:
   bundleIdPrefix: com.vectis.counter
   deploymentTarget:
@@ -59,6 +62,7 @@ targets:
     dependencies:
       - target: Shared/shared-staticlib
       - package: VectisDesign
+      - package: Inject
     info:
       path: Counter/Info.plist
       properties:
@@ -70,6 +74,10 @@ targets:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         CODE_SIGNING_ALLOWED: "NO"
+      configs:
+        Debug:
+          OTHER_LDFLAGS: ["-Xlinker", "-interposable"]
+          EMIT_FRONTEND_COMMAND_LINES: "YES"
 ```
 
 ## `iOS/Makefile`
@@ -111,11 +119,13 @@ clean:
 ## `iOS/Counter/CounterApp.swift`
 
 ```swift
+import Inject
 import SwiftUI
 
 @main
 struct CounterApp: App {
     @StateObject private var core = Core()
+    @ObserveInjection var inject
 
     var body: some Scene {
         WindowGroup {
@@ -165,11 +175,13 @@ class Core: ObservableObject {
 ## `iOS/Counter/ContentView.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct ContentView: View {
     @ObservedObject var core: Core
+    @ObserveInjection var inject
 
     var body: some View {
         switch core.view {
@@ -180,6 +192,7 @@ struct ContentView: View {
                 core.update(event)
             }
         }
+        .enableInjection()
     }
 }
 ```
@@ -187,10 +200,13 @@ struct ContentView: View {
 ## `iOS/Counter/Views/LoadingScreen.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct LoadingScreen: View {
+    @ObserveInjection var inject
+
     var body: some View {
         VStack(spacing: VectisSpacing.md) {
             ProgressView()
@@ -201,6 +217,7 @@ struct LoadingScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 
@@ -213,12 +230,14 @@ struct LoadingScreen: View {
 ## `iOS/Counter/Views/CounterScreen.swift`
 
 ```swift
+import Inject
 import SwiftUI
 import VectisDesign
 
 struct CounterScreen: View {
     let viewModel: CounterView
     let onEvent: (Event) -> Void
+    @ObserveInjection var inject
 
     var body: some View {
         VStack(spacing: VectisSpacing.lg) {
@@ -261,6 +280,7 @@ struct CounterScreen: View {
         }
         .frame(maxWidth: .infinity)
         .background(VectisColors.surface)
+        .enableInjection()
     }
 }
 
@@ -281,3 +301,5 @@ struct CounterScreen: View {
 4. **Preview support** -- every screen has a `#Preview` with sample data.
 5. **Accessibility** -- interactive icons have `accessibilityLabel`.
 6. **Render-only Core.swift** -- the simplest possible effect handler.
+7. **Hot reloading** -- Inject boilerplate (`@ObserveInjection`, `.enableInjection()`)
+   in every view; Debug-only linker flags in `project.yml`.

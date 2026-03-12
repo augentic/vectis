@@ -2,3 +2,6 @@
 
 target/
 temp/
+
+# Swift Package Manager build artifacts
+.build/

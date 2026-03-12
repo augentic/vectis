@@ -189,11 +189,14 @@ directory for the full checklist.
 iOS shell generation uses the `ios-shell` OpenSpec schema. Each shell is a
 change that produces a SwiftUI application wired to the Crux core via UniFFI.
 
-1. **Create the change:**
+1. **Create the change.** The convention is `create-{app}-ios` where `{app}`
+   matches the example directory name, using hyphens:
 
    ```bash
    openspec new change create-todo-ios --schema ios-shell
    ```
+
+   For an app in `examples/opsx_todo`, use `create-opsx-todo-ios`.
 
 2. **Propose and generate artifacts:**
 
@@ -233,6 +236,9 @@ change that produces a SwiftUI application wired to the Crux core via UniFFI.
    - **Structural** -- missing screen views, incomplete effect handlers
    - **Quality** -- concurrency safety, accessibility, design system compliance
    - **Integration** -- Core.swift correctness, build configuration
+
+   See [Working with Xcode](#working-with-xcode) for how to open and build the
+   generated shell.
 
 ## Design System
 
@@ -387,3 +393,52 @@ cargo install cargo-xcode --version 1.7.0
 
 Install the [Swift Language Support](https://open-vsx.org/extension/chrisatwindsurf/swift-vscode)
 Install the [SweetPad](https://marketplace.visualstudio.com/items?itemName=SweetPad.sweetpad) Cursor extension to link Cursor to Xcode.
+
+## Working with Xcode
+
+After generating an iOS shell, the `iOS/` directory contains a `project.yml`
+(XcodeGen spec) and a `Makefile` -- but no `.xcodeproj` yet. The Xcode project
+file is generated and gitignored; `project.yml` is the source of truth.
+
+**First-time setup:**
+
+```bash
+cd examples/my-app/iOS
+make setup
+```
+
+This runs two steps: `cargo xcode` in the `shared/` crate (producing
+`shared/shared.xcodeproj` for the Rust library), then `xcodegen` in the `iOS/`
+directory (producing `{AppName}.xcodeproj` for the Swift app).
+
+**Open the generated `.xcodeproj`:**
+
+```bash
+open MyApp.xcodeproj
+```
+
+The project name matches the app name declared in `project.yml`. From here you
+can build, run on a simulator, and use SwiftUI previews.
+
+**Common mistakes to avoid:**
+
+- Do **not** open `shared/shared.xcodeproj` -- that is the Rust library's Xcode
+  sub-project created by `cargo xcode`, not the iOS app.
+- Do **not** look for a `.xcworkspace` -- the ios-writer does not generate one.
+  The single `.xcodeproj` references the shared library as a dependency.
+- If Xcode gets into a bad state or creates stray scaffolding files, delete the
+  `.xcodeproj` and regenerate it:
+
+  ```bash
+  rm -rf MyApp.xcodeproj
+  make xcode
+  ```
+
+  Because the project file is fully derived from `project.yml`, this is always
+  safe.
+
+**Build from the command line:**
+
+```bash
+make build    # builds for iPhone 16 simulator via xcodebuild
+```

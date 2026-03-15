@@ -1,0 +1,45 @@
+name: Todo
+packages:
+  Shared:
+    path: generated/swift/Shared
+  SharedTypes:
+    path: generated/swift/SharedTypes
+  VectisDesign:
+    path: ../../../design-system/ios
+  Inject:
+    url: https://github.com/krzysztofzablocki/Inject.git
+    from: "1.5.2"
+options:
+  bundleIdPrefix: com.vectis.todo
+  deploymentTarget:
+    iOS: "17.0"
+attributes:
+  BuildIndependentTargetsInParallel: true
+targets:
+  Todo:
+    type: application
+    platform: iOS
+    sources:
+      - Todo
+    dependencies:
+      - package: Shared
+      - package: SharedTypes
+      - package: VectisDesign
+      - package: Inject
+    info:
+      path: Todo/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGNING_ALLOWED: "NO"
+      configs:
+        Debug:
+          OTHER_LDFLAGS: ["-Xlinker", "-interposable"]
+          EMIT_FRONTEND_COMMAND_LINES: "YES"

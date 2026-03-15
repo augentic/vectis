@@ -2305,6 +2305,8 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "async-sse",
+ "camino",
+ "cargo_metadata 0.19.2",
  "clap",
  "crux_core",
  "crux_http",

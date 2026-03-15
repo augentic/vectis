@@ -32,7 +32,7 @@ The following tools must be installed (see README.md for installation):
 - xcbeautify
 - swiftformat
 - XcodeGen
-- cargo-xcode (v1.7.0)
+- cargo-swift (v0.9.0) -- builds the Rust static library as a Swift Package with XCFramework
 
 ## Input Analysis
 
@@ -120,23 +120,109 @@ Create `{project-dir}/project.yml` following the template in
 - Set `bundleIdPrefix` based on the app name
 - Calculate the relative path from `{project-dir}` to `design-system/ios/`
   for the VectisDesign package reference
-- Calculate the relative path to `shared/shared.xcodeproj`
-- Include only the dependencies needed (VectisDesign always, SharedTypes if
-  the codegen binary has been run)
-- Include the `Inject` SPM package for hot reloading (remote URL dependency)
+- Use Swift Packages (NOT `projectReferences` / `cargo xcode`):
+
+```yaml
+packages:
+  Shared:
+    path: generated/swift/Shared        # UniFFI bindings + XCFramework
+  SharedTypes:
+    path: generated/swift/SharedTypes   # Domain types (Bincode serde)
+  VectisDesign:
+    path: ../../../design-system/ios    # adjust relative path as needed
+  Inject:
+    url: https://github.com/krzysztofzablocki/Inject.git
+    from: "1.5.2"
+targets:
+  {AppName}:
+    dependencies:
+      - package: Shared
+      - package: SharedTypes
+      - package: VectisDesign
+      - package: Inject
+```
+
 - Include Debug-only settings: `OTHER_LDFLAGS` with `-Xlinker -interposable`
   and `EMIT_FRONTEND_COMMAND_LINES: "YES"` (required for InjectionIII)
 
 ### 6. Generate `Makefile`
 
-Create `{project-dir}/Makefile` following the template in
-`references/ios-project-config.md`. Replace `{AppName}` with the actual
-app name.
+Create `{project-dir}/Makefile` with the three-phase build pipeline.
+Replace `{AppName}` with the actual app name.
+
+The build has three sequential phases:
+
+**Phase 1: typegen** -- Generate SharedTypes (domain types) and UniFFI
+Swift bindings (CoreFfi class + C header + modulemap):
+
+```makefile
+typegen:
+	@cargo build --manifest-path $(SHARED_DIR)/Cargo.toml --features uniffi
+	@RUST_LOG=info cargo run --manifest-path $(SHARED_DIR)/Cargo.toml \
+		--bin codegen --features codegen,facet_typegen -- \
+		--language swift --output-dir generated/swift
+```
+
+The library MUST be built with `--features uniffi` BEFORE running codegen,
+because bindgen scans the compiled library for UniFFI metadata.
+
+**Phase 2: package** -- Build XCFramework via cargo-swift, then replace its
+bundled Swift bindings with the version-matched ones from Phase 1:
+
+```makefile
+package:
+	@cd $(SHARED_DIR) && \
+		cargo swift package --name Shared --platforms ios \
+			--lib-type static --features uniffi && \
+		rm -rf ../iOS/generated/swift/Shared && \
+		mkdir -p ../iOS/generated/swift/Shared && \
+		cp -r Shared/* ../iOS/generated/swift/Shared/ && \
+		rm -rf Shared
+	@cp generated/swift/shared.swift \
+		generated/swift/Shared/Sources/Shared/shared.swift
+	@cp generated/swift/sharedFFI.h \
+		generated/swift/Shared/RustFramework.xcframework/ios-arm64/headers/RustFramework/sharedFFI.h
+	@cp generated/swift/sharedFFI.h \
+		generated/swift/Shared/RustFramework.xcframework/ios-arm64_x86_64-simulator/headers/RustFramework/sharedFFI.h
+	@cp generated/swift/sharedFFI.modulemap \
+		generated/swift/Shared/RustFramework.xcframework/ios-arm64/headers/RustFramework/module.modulemap
+	@cp generated/swift/sharedFFI.modulemap \
+		generated/swift/Shared/RustFramework.xcframework/ios-arm64_x86_64-simulator/headers/RustFramework/module.modulemap
+```
+
+The replacement step is required because cargo-swift bundles
+`uniffi-bindgen 0.29` which produces wrong symbol names when the crate
+uses `uniffi 0.31` proc macros. See the "UniFFI Version Mismatch" section
+below for details.
+
+**Phase 3: xcode** -- Generate the Xcode project:
+
+```makefile
+xcode:
+	@xcodegen
+```
+
+Also see `references/ios-project-config.md` for the full Makefile template.
 
 ### 7. Generate `Core.swift`
 
 Create `{project-dir}/{AppName}/Core.swift` following the pattern in
 `references/crux-ios-shell-pattern.md`.
+
+`Core.swift` must import both `Shared` (for `CoreFfi`) and `SharedTypes`
+(for domain types like `ViewModel`, `Event`, `Request`).
+
+#### CoreFfi API (UniFFI 0.31)
+
+UniFFI 0.31 generates **labeled arguments** on `CoreFfi` methods:
+
+```swift
+core.update(data: Data(...))                    // NOT core.update(Data(...))
+core.resolve(id: request.id, data: Data(...))   // NOT core.resolve(request.id, Data(...))
+core.view()                                     // unchanged
+```
+
+#### Effect handlers
 
 The `processEffect` switch must have one case per Effect variant:
 
@@ -150,6 +236,17 @@ The `processEffect` switch must have one case per Effect variant:
 | `Platform` | Include if `Effect::Platform(PlatformRequest)` exists. Returns `UIDevice` info. |
 
 Include only the effect handlers that the app actually uses.
+
+#### KV Types (crux_kv)
+
+When generating the KeyValue handler, use these generated types:
+
+- `KeyValueOperation` with cases `.get(key:)`, `.set(key:value:)`,
+  `.delete(key:)`, `.exists(key:)`, `.listKeys(prefix:cursor:)`
+- `KeyValueResult` with `.ok(response:)` and `.err(error:)`
+- `KeyValueResponse` with `.get(value:)`, `.set(previous:)`,
+  `.delete(previous:)`, `.exists(isPresent:)`, `.listKeys(keys:nextCursor:)`
+- `Value` enum: `.none` / `.bytes([UInt8])` (NOT Swift Optional)
 
 Add HTTP helper functions if the HTTP capability is present. See
 `references/crux-ios-shell-pattern.md` for the full implementation.
@@ -177,7 +274,7 @@ For each ViewModel variant, create a screen view file in
 
 For each screen:
 
-1. Import `SwiftUI`, `VectisDesign`, and `Inject`.
+1. Import `SwiftUI`, `SharedTypes`, `VectisDesign`, and `Inject`.
 2. Accept the per-page view struct as a `let` property.
 3. Accept `let onEvent: (Event) -> Void` for user interactions.
 4. Use VectisDesign tokens for all colors, fonts, and spacing.
@@ -356,7 +453,7 @@ Same as create mode step 11:
 | `app.rs` not found | Verify `app-dir` points to a Crux app with `shared/src/app.rs` |
 | Unknown Effect variant | Add a placeholder `case` with a `fatalError("unhandled")` and report |
 | `xcodegen` fails | Check `project.yml` syntax; verify path references |
-| Build fails with missing types | Run `cargo xcode` in the shared crate; verify UniFFI setup |
+| Build fails with missing types | Check the "UniFFI Version Mismatch" section below. Use `uniffi::generate_swift_bindings` (0.31) NOT `crux_core::cli::bindgen` (bundles 0.29) |
 | VectisDesign not found | Check package path in `project.yml` relative to `{project-dir}` |
 
 ## Verification Checklist
@@ -412,13 +509,87 @@ Same as create mode step 11:
   to Swift code.
 - **UniFFI bridging**: The shared crate must have `crate-type = ["staticlib"]`
   and the `uniffi` feature gate. The ios-writer assumes this is already
-  configured by the core-writer.
-- **Generated types**: The `SharedTypes` Swift module is produced by the
-  UniFFI/codegen toolchain. If types are missing, run
-  `cargo build --features uniffi` in the shared crate.
+  configured by the core-writer. See "UniFFI Version Mismatch" below for
+  a critical build issue.
+- **Generated types**: Two Swift packages are produced: `SharedTypes` (domain
+  types via facet_typegen) and `Shared` (UniFFI bindings + XCFramework via
+  cargo-swift). The XCFramework's bundled Swift bindings must be replaced with
+  the version-matched output from the codegen binary (see step 6).
 - **Hot reloading**: All generated shells include the
   [Inject](https://github.com/krzysztofzablocki/Inject) library for hot
   reloading during development. Inject is a no-op in Release builds (stripped
   by LLVM), so the boilerplate can remain permanently. Each developer must
   install [InjectionIII](https://github.com/nicklama/InjectionIII/releases)
   separately -- see `references/ios-project-config.md` for setup details.
+
+## UniFFI Version Mismatch
+
+`crux_core::cli::bindgen` bundles `uniffi_bindgen 0.29`, but the workspace
+uses `uniffi 0.31` proc macros. This causes three failures:
+
+1. **Wrong C symbol names** -- bindgen 0.29 generates
+   `uniffi_<crate>__ffi_fn_*` (double underscore + `_ffi_` infix), while
+   0.31 proc macros emit `uniffi_<crate>_fn_*` (single underscore, no infix).
+2. **Missing `CoreFfi` class** -- bindgen 0.29 cannot parse 0.31 metadata,
+   producing a `shared.swift` with only scaffolding (RustBuffer, init checks)
+   but no actual object bindings.
+3. **Phantom function** -- the 0.29 generated code calls
+   `uniffiEnsureSharedFfiInitialized()` which does not exist in 0.31.
+
+### Fix: Use uniffi 0.31 bindgen directly
+
+The codegen binary must use `uniffi::generate_swift_bindings` (re-exported
+from `uniffi_bindgen 0.31`) directly instead of `crux_core::cli::bindgen`
+for Swift. Kotlin bindgen can continue to use `crux_core::cli::bindgen`.
+
+Required Cargo.toml additions for the codegen feature:
+
+```toml
+codegen = [
+    "crux_core/cli",
+    "facet_typegen",
+    "dep:clap",
+    "dep:pretty_env_logger",
+    "dep:camino",
+    "dep:cargo_metadata",
+    "uniffi",
+    "uniffi/bindgen",  # pulls in uniffi_bindgen 0.31
+]
+
+[dependencies]
+camino = { version = "1", optional = true }
+cargo_metadata = { version = "0.19", optional = true }
+```
+
+Codegen pattern for the Swift bindgen function:
+
+```rust
+fn swift_bindgen(out_dir: &PathBuf) -> Result<()> {
+    use cargo_metadata::MetadataCommand;
+    use uniffi::{SwiftBindingsOptions, generate_swift_bindings};
+
+    let metadata = MetadataCommand::new().no_deps().exec()?;
+    let target_dir = &metadata.target_directory;
+    let library_path = ["rlib", "dylib", "a"]
+        .iter()
+        .map(|ext| target_dir.join(format!("debug/libshared.{ext}")))
+        .find(|p| p.exists())
+        .ok_or_else(|| anyhow!("library not found — run cargo build --features uniffi first"))?;
+
+    let options = SwiftBindingsOptions {
+        generate_swift_sources: true,
+        generate_headers: true,
+        generate_modulemap: true,
+        source: library_path,
+        out_dir: Utf8PathBuf::from_path_buf(out_dir.clone()).unwrap(),
+        ..SwiftBindingsOptions::default()
+    };
+    generate_swift_bindings(options)?;
+    Ok(())
+}
+```
+
+This workaround is needed because `crux_cli` vendors an older
+`uniffi_bindgen`. When `crux_cli` updates to `uniffi_bindgen 0.31`, the
+custom function can be replaced with a simple call to
+`crux_core::cli::bindgen` (matching the Kotlin pattern).

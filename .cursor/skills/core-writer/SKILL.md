@@ -784,7 +784,12 @@ all other items apply in both modes.
   the workspace `Cargo.toml` to use versioned dependencies instead.
 - **`facet` version pinning**: The `facet` crate must be pinned to `"=0.31"` exactly.
   Other versions may be incompatible with `crux_core`.
-- **`uniffi` version**: Use `"0.31"` for the latest uniffi with Rust 2024 edition support.
+- **`uniffi` version pinning**: The `uniffi` crate must be pinned to `"=0.29.4"` exactly,
+  to match the `uniffi_bindgen` version bundled in `crux_core::cli`. Using a different
+  version causes symbol-name mismatches during iOS/Android code generation.
+- **Dependency version policy**: Use the latest published version of all Rust crate
+  dependencies by default. The exceptions are `facet` (pinned to `"=0.31"`) and `uniffi`
+  (pinned to `"=0.29.4"`) which must match versions expected by `crux_core`.
 - **No `Capabilities` type**: The 0.17 API removes `type Capabilities` and the `caps`
   parameter from `update()`. Do not include them.
 - **`Command` has no generic parameters**: Return `Command` not `Command<Effect, Event>`.

@@ -1,0 +1,20 @@
+doc-valid-idents = []
+
+allowed-duplicate-crates = [
+    "base64",
+    "getrandom",
+    "darling",
+    "darling_core",
+    "darling_macro",
+    "fastrand",
+    "futures-lite",
+    "hashbrown",
+    "infer",
+    "rand",
+    "rand_chacha",
+    "rand_core",
+    "serde_qs",
+    "syn",
+    "thiserror",
+    "thiserror-impl",
+]

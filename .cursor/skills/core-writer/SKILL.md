@@ -14,8 +14,8 @@ When an existing project is detected, the skill operates in **update mode**: it
 compares the spec against the current implementation and makes targeted edits
 rather than regenerating from scratch.
 
-This skill targets the **Crux 0.17+ API** (master branch). Dependencies use git references
-until the crate is published to crates.io.
+This skill targets **Crux 0.17.0-rc3**, pinned to the `crux_core-v0.17.0-rc3` tag.
+Dependencies use git references with a tag until the crate is published to crates.io.
 
 ## Arguments
 
@@ -157,10 +157,10 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.88"
 
 [workspace.dependencies]
-crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
+crux_core = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
 serde = "1.0"
 facet = "=0.31"
 
@@ -279,15 +279,26 @@ across all apps except for the `Bridge<AppType>` generic parameter.
 If SSE or other custom capabilities are needed, generate them as separate modules.
 Follow `references/crux-custom-capabilities.md` for the pattern.
 
-### 8. Generate `shared/src/lib.rs`
+### 8. Generate `shared/src/bin/codegen.rs`
 
-Wire everything together:
+Generate the type-generation binary following `references/crux-project-config.md` § Codegen Binary.
+Replace `MyApp` with the app struct name. The binary uses `TypeRegistry` from facet to
+extract types at compile time -- it does not depend on RustDoc JSON parsing.
+
+### 9. Generate `shared/src/lib.rs`
+
+Wire everything together. The FFI module is conditionally compiled behind the
+`uniffi` and `wasm_bindgen` features:
 ```rust
 mod app;
-pub mod ffi;
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+mod ffi;
 
 pub use app::*;
 pub use crux_core::Core;
+
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+pub use ffi::CoreFFI;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -295,7 +306,7 @@ uniffi::setup_scaffolding!();
 
 Add `pub mod {capability};` for any custom capability modules.
 
-### 9. Verify
+### 10. Verify
 
 Run `cargo check` in the project directory. If it fails:
 1. Read the error output carefully
@@ -305,7 +316,7 @@ Run `cargo check` in the project directory. If it fails:
 
 Then run `cargo test` to verify tests pass.
 
-### 10. Lint with clippy
+### 11. Lint with clippy
 
 Run `cargo clippy --all-targets`. The workspace lints (`all`, `nursery`, `pedantic`, `cargo`,
 plus restriction cherry-picks) are configured in the workspace `Cargo.toml`. Fix all warnings
@@ -325,7 +336,7 @@ before proceeding. Common issues:
 - `multiple_crate_versions` -- add duplicate crate names to `clippy.toml`
   `allowed-duplicate-crates` when they are transitive and cannot be resolved
 
-### 11. Review for unused dependencies
+### 12. Review for unused dependencies
 
 After the build passes, audit `Cargo.toml` against actual usage:
 
@@ -336,7 +347,7 @@ After the build passes, audit `Cargo.toml` against actual usage:
    are not referenced.
 3. Re-run `cargo check` after removals to confirm nothing was missed.
 
-### 12. Self-review for logic bugs
+### 13. Self-review for logic bugs
 
 After all mechanical checks pass, review the generated code for these common logic issues:
 
@@ -501,7 +512,7 @@ Consult `references/crux-testing-patterns.md` for testing conventions.
 
 ### U8. Verify
 
-Same as create mode steps 9--12:
+Same as create mode steps 10--13:
 
 1. Run `cargo check` -- fix any compilation errors.
 2. Run `cargo test` -- fix any test failures.
@@ -703,7 +714,7 @@ See `references/examples/` for complete worked examples:
 | Error | Resolution |
 |---|---|
 | `cargo check` fails with unresolved import | Verify capability crate is in `[workspace.dependencies]` and `shared/Cargo.toml` |
-| `Command` type mismatch | Ensure `update()` returns `Command` (no generic params in 0.17+) |
+| `Command` type mismatch | Ensure `update()` returns `Command<Effect, Event>` |
 | `facet` derive errors | Ensure `facet = "=0.31"` is pinned exactly; add `#[repr(C)]` to enums |
 | `uniffi` build failures | Ensure `uniffi` is behind `feature = "uniffi"` gate, not unconditional |
 | Missing `Operation` impl for custom capability | Each custom request type must `impl Operation` with `type Output` |
@@ -727,7 +738,7 @@ all other items apply in both modes.
 ### Types and structure
 
 - [ ] Every Event variant is handled in `update()`
-- [ ] Every `update()` branch returns a `Command` (not `()`)
+- [ ] Every `update()` branch returns a `Command<Effect, Event>` (not `()`)
 - [ ] Internal Event variants have `#[serde(skip)]` and `#[facet(skip)]`
 - [ ] `ViewModel` is an enum with `#[repr(C)]` and derives `Facet, Serialize, Deserialize,
   Clone, Debug, Default`
@@ -780,8 +791,8 @@ all other items apply in both modes.
 
 ## Important Notes
 
-- **0.17 is unreleased**: Use git dependencies. When 0.17 is published to crates.io, update
-  the workspace `Cargo.toml` to use versioned dependencies instead.
+- **0.17 is pre-release**: Use git dependencies pinned to the `crux_core-v0.17.0-rc3` tag.
+  When 0.17 is published to crates.io, replace git dependencies with versioned ones.
 - **`facet` version pinning**: The `facet` crate must be pinned to `"=0.31"` exactly.
   Other versions may be incompatible with `crux_core`.
 - **`uniffi` version pinning**: The `uniffi` crate must be pinned to `"=0.29.4"` exactly,
@@ -790,9 +801,13 @@ all other items apply in both modes.
 - **Dependency version policy**: Use the latest published version of all Rust crate
   dependencies by default. The exceptions are `facet` (pinned to `"=0.31"`) and `uniffi`
   (pinned to `"=0.29.4"`) which must match versions expected by `crux_core`.
-- **No `Capabilities` type**: The 0.17 API removes `type Capabilities` and the `caps`
-  parameter from `update()`. Do not include them.
-- **`Command` has no generic parameters**: Return `Command` not `Command<Effect, Event>`.
+- **No `Capabilities` struct**: The 0.17 API does not use a `Capabilities` struct.
+  Define `Effect` directly as an enum with `#[effect(facet_typegen)]`. The `App` trait
+  requires `type Effect = Effect;`.
+- **`Command` is generic**: Return `Command<Effect, Event>` from `update()`.
 - **`#[repr(C)]` on Event enums**: Required by `facet` for enums that cross the FFI boundary.
+- **Codegen uses `TypeRegistry`**: The codegen binary uses `crux_core::type_generation::facet::TypeRegistry`
+  for compile-time type extraction. Do NOT use `crux_core::cli::run()` which depends on
+  `rustdoc-types` and breaks with newer Rust versions.
 - **SSE is not a published crate**: It is a custom capability. Generate it inline when needed.
 - **Core only**: This skill generates only the `shared` crate. Shell skills are separate.

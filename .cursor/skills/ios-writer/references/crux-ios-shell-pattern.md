@@ -28,7 +28,7 @@ UI rendering.
 │         └──────────────┬───────────────────┘ │
 │                        │                      │
 │                        ▼                      │
-│              CoreFFI (UniFFI bridge)         │
+│              CoreFfi (UniFFI bridge)          │
 │              .update(data) → effects         │
 │              .resolve(id, data) → effects    │
 │              .view() → viewModel             │
@@ -50,16 +50,17 @@ The `Core` class is the bridge between SwiftUI and the Rust core. It is an
 
 ```swift
 import Foundation
+import Shared
 import SharedTypes
 
 @MainActor
 class Core: ObservableObject {
     @Published var view: ViewModel
 
-    private let core: CoreFFI
+    private let core: CoreFfi
 
     init() {
-        self.core = CoreFFI()
+        self.core = CoreFfi()
         self.view = try! .bincodeDeserialize(input: [UInt8](core.view()))
     }
 
@@ -225,7 +226,7 @@ load persisted state or fetch initial data.
 
 ```swift
 init() {
-    self.core = CoreFFI()
+    self.core = CoreFfi()
     self.view = try! .bincodeDeserialize(input: [UInt8](core.view()))
     update(.navigate(.main))
 }
@@ -236,7 +237,7 @@ init() {
 - `Core` is `@MainActor` -- all property access is main-thread.
 - Async effect handlers (`Task { ... }`) return to the main actor because
   `Core` methods are implicitly `@MainActor`.
-- `CoreFFI` is thread-safe internally (Rust `Bridge` uses interior mutability).
+- `CoreFfi` is thread-safe internally (Rust `Bridge` uses interior mutability).
 
 ## Type Mapping: Rust → Swift
 

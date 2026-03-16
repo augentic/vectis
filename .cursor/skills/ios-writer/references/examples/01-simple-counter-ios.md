@@ -38,10 +38,11 @@ examples/counter/
 
 ```yaml
 name: Counter
-projectReferences:
-  Shared:
-    path: ../shared/shared.xcodeproj
 packages:
+  SharedTypes:
+    path: ./generated/SharedTypes
+  Shared:
+    path: ./generated/Shared
   VectisDesign:
     path: ../../../design-system/ios
   Inject:
@@ -60,7 +61,8 @@ targets:
     sources:
       - Counter
     dependencies:
-      - target: Shared/shared-staticlib
+      - package: SharedTypes
+      - package: Shared
       - package: VectisDesign
       - package: Inject
     info:
@@ -73,36 +75,49 @@ targets:
       base:
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
-        CODE_SIGNING_ALLOWED: "NO"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
       configs:
         Debug:
-          OTHER_LDFLAGS: ["-Xlinker", "-interposable"]
+          PRODUCT_BUNDLE_IDENTIFIER: com.vectis.counter.debug
+          OTHER_LDFLAGS: ["-w", "-Xlinker", "-interposable"]
           EMIT_FRONTEND_COMMAND_LINES: "YES"
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.vectis.counter
+          OTHER_LDFLAGS: ["-w"]
 ```
 
 ## `iOS/Makefile`
 
 ```makefile
-.PHONY: all setup build clean
+.PHONY: all build clean typegen package xcode
 
 SHARED_DIR := ../shared
-TARGETS := aarch64-apple-ios aarch64-apple-ios-sim
 
-all: setup build
+all: build
 
-setup: rust-lib xcode
+build: typegen package xcode
 
-rust-lib:
-	@for target in $(TARGETS); do \
-		cargo build --manifest-path $(SHARED_DIR)/Cargo.toml \
-			--target $$target --release --features uniffi; \
-	done
+typegen:
+	@echo "Generating SharedTypes..."
+	@RUST_LOG=info cargo run --manifest-path $(SHARED_DIR)/Cargo.toml \
+		--bin codegen --features codegen,facet_typegen -- \
+		--language swift --output-dir generated
+
+package:
+	@echo "Building Shared Swift package..."
+	@cd $(SHARED_DIR) && \
+		cargo swift package --name Shared --platforms ios \
+			--lib-type static --features uniffi && \
+		rm -rf ../iOS/generated/Shared && \
+		mkdir -p ../iOS/generated/Shared && \
+		cp -r Shared/* ../iOS/generated/Shared/ && \
+		rm -rf Shared
 
 xcode:
-	@cd $(SHARED_DIR)/.. && cargo xcode
+	@echo "Generating Xcode project..."
 	@xcodegen
 
-build:
+sim-build:
 	@xcodebuild build \
 		-project Counter.xcodeproj \
 		-scheme Counter \
@@ -112,8 +127,7 @@ build:
 		2>&1 | xcbeautify
 
 clean:
-	@xcodebuild clean -project Counter.xcodeproj -scheme Counter \
-		2>&1 | xcbeautify
+	@rm -rf generated/ *.xcodeproj
 ```
 
 ## `iOS/Counter/CounterApp.swift`
@@ -140,16 +154,17 @@ struct CounterApp: App {
 
 ```swift
 import Foundation
+import Shared
 import SharedTypes
 
 @MainActor
 class Core: ObservableObject {
     @Published var view: ViewModel
 
-    private let core: CoreFFI
+    private let core: CoreFfi
 
     init() {
-        self.core = CoreFFI()
+        self.core = CoreFfi()
         self.view = try! .bincodeDeserialize(input: [UInt8](core.view()))
     }
 

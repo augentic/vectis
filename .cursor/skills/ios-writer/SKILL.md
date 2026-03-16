@@ -41,7 +41,7 @@ render and handle. Read `{app-dir}/shared/src/app.rs` and extract:
 
 | Extract | Source | Maps to |
 |---|---|---|
-| App struct name | `impl App for X` | `CoreFFI` bridge type parameter, app entry point name |
+| App struct name | `impl App for X` | App entry point name (UniFFI generates `CoreFfi` in Swift) |
 | ViewModel variants | `enum ViewModel` | ContentView switch cases, one screen per variant |
 | Per-page view structs | Structs wrapped by ViewModel variants | Screen view properties and layout |
 | Shell-facing Event variants | `enum Event` (non-`#[serde(skip)]`) | User interaction handlers in screens |
@@ -124,20 +124,20 @@ Create `{project-dir}/project.yml` following the template in
 
 ```yaml
 packages:
-  Shared:
-    path: generated/swift/Shared        # UniFFI bindings + XCFramework
   SharedTypes:
-    path: generated/swift/SharedTypes   # Domain types (Bincode serde)
+    path: ./generated/SharedTypes    # Domain types from codegen
+  Shared:
+    path: ./generated/Shared         # UniFFI bindings from cargo-swift
   VectisDesign:
-    path: ../../../design-system/ios    # adjust relative path as needed
+    path: ../../../design-system/ios # adjust relative path as needed
   Inject:
     url: https://github.com/krzysztofzablocki/Inject.git
     from: "1.5.2"
 targets:
   {AppName}:
     dependencies:
-      - package: Shared
       - package: SharedTypes
+      - package: Shared
       - package: VectisDesign
       - package: Inject
 ```
@@ -152,29 +152,31 @@ Replace `{AppName}` with the actual app name.
 
 The build has three sequential phases:
 
-**Phase 1: typegen** -- Generate SharedTypes (domain types):
+**Phase 1: typegen** -- Generate SharedTypes (domain types as a Swift package):
 
 ```makefile
 typegen:
-	@cargo build --manifest-path $(SHARED_DIR)/Cargo.toml --features uniffi
+	@echo "Generating SharedTypes..."
 	@RUST_LOG=info cargo run --manifest-path $(SHARED_DIR)/Cargo.toml \
 		--bin codegen --features codegen,facet_typegen -- \
-		--language swift --output-dir generated/swift
+		--language swift --output-dir generated
 ```
 
-The library MUST be built with `--features uniffi` BEFORE running codegen,
-because bindgen scans the compiled library for UniFFI metadata.
+The codegen binary uses `TypeRegistry` from facet to extract types at compile
+time. It creates a Swift package at `generated/SharedTypes/`. No separate
+`cargo build` step is needed -- the `cargo run` command compiles what it needs.
 
-**Phase 2: package** -- Build XCFramework via cargo-swift:
+**Phase 2: package** -- Build Shared (UniFFI bindings as a Swift package):
 
 ```makefile
 package:
+	@echo "Building Shared Swift package..."
 	@cd $(SHARED_DIR) && \
 		cargo swift package --name Shared --platforms ios \
 			--lib-type static --features uniffi && \
-		rm -rf ../iOS/generated/swift/Shared && \
-		mkdir -p ../iOS/generated/swift/Shared && \
-		cp -r Shared/* ../iOS/generated/swift/Shared/ && \
+		rm -rf ../iOS/generated/Shared && \
+		mkdir -p ../iOS/generated/Shared && \
+		cp -r Shared/* ../iOS/generated/Shared/ && \
 		rm -rf Shared
 ```
 
@@ -182,10 +184,12 @@ package:
 
 ```makefile
 xcode:
+	@echo "Generating Xcode project..."
 	@xcodegen
 ```
 
-Also see `references/ios-project-config.md` for the full Makefile template.
+See `references/ios-project-config.md` for the complete Makefile template
+including `sim-build` and `clean` targets.
 
 ### 7. Generate `Core.swift`
 
@@ -289,8 +293,8 @@ struct {AppName}App: App {
 ### 11. Format and verify
 
 1. Run `swiftformat {project-dir}/{AppName}/` to format all generated Swift files.
-2. Run `make setup` in `{project-dir}` to generate the Xcode projects.
-3. Run `make build` to verify the project compiles.
+2. Run `make build` in `{project-dir}` to run the full pipeline (typegen → package → xcode).
+3. Run `make sim-build` to verify the project compiles for the iOS Simulator.
 4. If the build fails, read the error output, fix the issue, and re-run.
 
 ## Process: Update Mode

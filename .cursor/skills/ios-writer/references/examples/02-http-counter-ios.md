@@ -40,16 +40,17 @@ examples/http-counter/
 
 ```swift
 import Foundation
+import Shared
 import SharedTypes
 
 @MainActor
 class Core: ObservableObject {
     @Published var view: ViewModel
 
-    private let core: CoreFFI
+    private let core: CoreFfi
 
     init() {
-        self.core = CoreFFI()
+        self.core = CoreFfi()
         self.view = try! .bincodeDeserialize(input: [UInt8](core.view()))
         update(.fetchCount)
     }

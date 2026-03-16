@@ -17,11 +17,11 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.88"
 
 [workspace.dependencies]
-crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
-crux_kv = { git = "https://github.com/redbadger/crux", branch = "master" }
+crux_core = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
+crux_kv = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
 serde = "1.0"
 serde_json = "1.0"
 facet = "=0.31"
@@ -75,10 +75,14 @@ wasm-bindgen = { version = "0.2", optional = true }
 
 ```rust
 mod app;
-pub mod ffi;
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+mod ffi;
 
 pub use app::*;
 pub use crux_core::Core;
+
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+pub use ffi::CoreFFI;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -206,7 +210,7 @@ pub enum Effect {
 pub struct Notes;
 
 impl Notes {
-    fn save_notes(notes: &[Note]) -> Command {
+    fn save_notes(notes: &[Note]) -> Command<Effect, Event> {
         let bytes = serde_json::to_vec(notes).unwrap_or_default();
         KeyValue::set(STORAGE_KEY, bytes).then_send(Event::Saved)
     }
@@ -218,7 +222,7 @@ impl App for Notes {
     type ViewModel = ViewModel;
     type Effect = Effect;
 
-    fn update(&self, event: Event, model: &mut Model) -> Command {
+    fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         match event {
             Event::Load => {
                 KeyValue::get(STORAGE_KEY).then_send(Event::Loaded)

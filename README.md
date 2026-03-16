@@ -38,8 +38,8 @@ brew install swiftformat
 # Generate Xcode projects from declarative YAML (project.yml)
 brew install xcodegen
 
-# Generate Xcode sub-project for the Rust shared library
-cargo install cargo-xcode --version 1.7.0
+# Build Rust static library as a Swift Package with XCFramework
+cargo install cargo-swift
 ```
 
 Install the [Swift Language Support](https://open-vsx.org/extension/chrisatwindsurf/swift-vscode)
@@ -341,10 +341,10 @@ After generating an iOS shell, the `iOS/` directory contains a `project.yml` (Xc
 
 ```bash
 cd examples/my-app/iOS
-make setup
+make build
 ```
 
-This runs two steps: `cargo xcode` in the `shared/` crate (producing `shared/shared.xcodeproj` for the Rust library), then `xcodegen` in the `iOS/` directory (producing `{AppName}.xcodeproj` for the Swift app).
+This runs three phases: `typegen` (generates SharedTypes Swift package from domain types), `package` (builds the Shared Swift package via cargo-swift), then `xcode` (generates the `.xcodeproj` via XcodeGen).
 
 **Open the generated `.xcodeproj`:**
 
@@ -356,8 +356,7 @@ The project name matches the app name declared in `project.yml`. From here you c
 
 **Common mistakes to avoid:**
 
-- Do **not** open `shared/shared.xcodeproj` -- that is the Rust library's Xcode sub-project created by `cargo xcode`, not the iOS app.
-- Do **not** look for a `.xcworkspace` -- the ios-writer does not generate one. The single `.xcodeproj` references the shared library as a dependency.
+- Do **not** look for a `.xcworkspace` -- the ios-writer does not generate one. The single `.xcodeproj` references the generated Swift packages as dependencies.
 - If Xcode gets into a bad state or creates stray scaffolding files, delete the `.xcodeproj` and regenerate it:
   ```bash
   rm -rf MyApp.xcodeproj

@@ -83,14 +83,18 @@ impl CoreFFI {
 
 ## `shared/src/lib.rs`
 
-Wire the FFI module and set up UniFFI scaffolding:
+Wire the FFI module (conditionally compiled) and set up UniFFI scaffolding:
 
 ```rust
 mod app;
-pub mod ffi;
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+mod ffi;
 
 pub use app::*;
 pub use crux_core::Core;
+
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+pub use ffi::CoreFFI;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -100,11 +104,15 @@ If you have custom capability modules, add them here:
 
 ```rust
 mod app;
-pub mod ffi;
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+mod ffi;
 pub mod sse;
 
 pub use app::*;
 pub use crux_core::Core;
+
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+pub use ffi::CoreFFI;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();

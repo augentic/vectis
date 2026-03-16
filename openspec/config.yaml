@@ -5,7 +5,10 @@ context: |
   The core-writer skill at .cursor/skills/core-writer/SKILL.md generates Crux shared crates
   from app spec files. Each example app lives in examples/<app-name>/ as a Cargo workspace
   with a shared/ crate containing all business logic, state management, and side-effect
-  orchestration. See examples/todo-spec.md for the reference app specification.
+  orchestration. The file examples/todo-spec.md illustrates the expected spec
+  format and section structure; it is a structural reference only, NOT a source
+  of requirements. Never use it (or any other existing file) as requirements
+  input unless the user explicitly provides it.
 
   The crux-app schema orchestrates core generation: it produces a core-writer-compatible
   app-spec artifact, then the apply phase invokes the core-writer skill to generate the code.

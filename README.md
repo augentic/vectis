@@ -57,22 +57,36 @@ brew install openspec
 
 #### Create a new app
 
-1. **Create the change.** Give it a kebab-case name describing what you are building:
-  ```bash
-   openspec new change create-my-app --schema crux-app
-  ```
-   This scaffolds `openspec/changes/create-my-app/` with a `.openspec.yaml` that binds it to the `crux-app` schema.
-2. **Generate the artifacts.** Ask the agent to propose the change:
-  > /opsx:propose create-my-app
-  >  Or describe what you want and let the agent fill in the artifacts:
-  > Propose a Crux app called "Weather" that fetches forecasts from a REST API and displays them. Put it in `examples/weather`.
-  >  The agent produces three artifacts in dependency order:
+1. **Create an empty change.** Give it a kebab-case name describing what you are building:
 
-  | Artifact      | Purpose                                                                        |
-  | ------------- | ------------------------------------------------------------------------------ |
-  | `proposal.md` | App concept, motivation, target directory, capabilities overview               |
-  | `app-spec.md` | Full app specification in core-writer format (the contract)                    |
-  | `tasks.md`    | Implementation checklist -- create directory, invoke core-writer, verify build |
+```bash
+openspec new change create-my-app --schema crux-app
+```
+
+This scaffolds `openspec/changes/create-my-app/` with a `.openspec.yaml` that binds it to the `crux-app` schema. No artifacts are generated yet -- the change is empty.
+
+2. **Provide requirements and generate the proposal.** The agent needs requirements from you before it can produce artifacts. Supply them in one of three ways:
+
+   **a) Point to an existing spec file:**
+   > Propose `create-my-app` using the spec at `examples/my-app-spec.md`
+
+   **b) Describe what you want inline:**
+   > Propose `create-my-app`: A weather app that fetches 5-day forecasts from a REST API
+   > and displays them in a scrollable list. It should cache the last fetch in Key-Value
+   > storage for offline use. Put it in `examples/weather`.
+
+   **c) Let the agent ask you interactively:**
+   > /opsx:propose create-my-app
+
+   If you provide only the change name, the agent will ask you to describe the app before proceeding. It will not infer requirements from other files in the repository.
+
+   The agent produces three artifacts in dependency order:
+
+| Artifact      | Purpose                                                                        |
+| ------------- | ------------------------------------------------------------------------------ |
+| `proposal.md` | App concept, motivation, target directory, capabilities overview               |
+| `app-spec.md` | Full app specification in core-writer format (the contract)                    |
+| `tasks.md`    | Implementation checklist -- create directory, invoke core-writer, verify build |
 
 3. **Review.** Read through the artifacts in `openspec/changes/create-my-app/`. Edit them by hand or ask the agent to revise before proceeding.
 4. **Apply.** Generate the code:

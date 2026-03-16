@@ -23,9 +23,17 @@ xcuserdata/
 *.rmeta
 *.pcm
 *.mdb
+*.d
 
 # Generated xcframeworks (rebuilt by cargo/crux)
 *.xcframework/
+
+# Cargo incremental compilation
+incremental/
+CACHEDIR.TAG
+.rustc_info.json
+.fingerprint/
+.cargo-lock
 
 # Temporary
 temp/

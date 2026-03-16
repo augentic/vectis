@@ -1,7 +1,31 @@
 .DS_Store
 
+# Rust
 target/
-temp/
 
-# Swift Package Manager build artifacts
+# Swift Package Manager
 .build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+build/
+DerivedData/
+*.xcuserdata
+xcuserdata/
+
+# Compiled binary artifacts
+*.a
+*.o
+*.dylib
+*.so
+*.rlib
+*.rmeta
+*.pcm
+*.mdb
+
+# Generated xcframeworks (rebuilt by cargo/crux)
+*.xcframework/
+
+# Temporary
+temp/

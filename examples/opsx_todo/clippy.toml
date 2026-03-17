@@ -7,7 +7,7 @@ allowed-duplicate-crates = [
     "darling_macro",
     "fastrand",
     "futures-lite",
-    "getrandom",
+    "hashbrown",
     "infer",
     "rand",
     "rand_chacha",

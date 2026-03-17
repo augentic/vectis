@@ -8,7 +8,11 @@ targeting the 0.17+ API on the master branch.
 The `App` trait is the central interface. It has four associated types and two methods:
 
 ```rust
-use crux_core::{App, Command};
+use crux_core::{
+    App, Command,
+    macros::effect,
+    render::{RenderOperation, render},
+};
 
 #[derive(Default)]
 pub struct MyApp;
@@ -19,7 +23,7 @@ impl App for MyApp {
     type ViewModel = ViewModel;
     type Effect = Effect;
 
-    fn update(&self, event: Event, model: &mut Model) -> Command {
+    fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         // handle events, mutate model, return side-effect commands
     }
 
@@ -433,7 +437,7 @@ The `update()` function handles events, mutates the model, and returns commands.
 Every match arm must return a `Command`.
 
 ```rust
-fn update(&self, event: Event, model: &mut Model) -> Command {
+fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
     match event {
         Event::Increment => {
             model.count += 1;
@@ -497,7 +501,7 @@ pub struct Model {
 Always sync from `pending_ops[0]`. Record its ID before dispatching the HTTP command:
 
 ```rust
-fn start_sync(model: &mut Model) -> Command {
+fn start_sync(model: &mut Model) -> Command<Effect, Event> {
     if model.pending_ops.is_empty() {
         model.sync_status = SyncStatus::Idle;
         return render();

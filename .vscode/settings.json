@@ -3,7 +3,5 @@
         "editor.wordWrap": "wordWrapColumn",
         "editor.wordWrapColumn": 100
     },
-    "rust-analyzer.linkedProjects": [
-        "examples/todo/Cargo.toml"
-    ]
+    "rust-analyzer.linkedProjects": []
 }

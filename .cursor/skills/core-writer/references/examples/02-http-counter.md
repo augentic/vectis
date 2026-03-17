@@ -17,11 +17,11 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.88"
 
 [workspace.dependencies]
-crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
-crux_http = { git = "https://github.com/redbadger/crux", branch = "master" }
+crux_core = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
+crux_http = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
 serde = "1.0"
 facet = "=0.31"
 ```
@@ -66,7 +66,7 @@ clap = { version = "4", optional = true, features = ["derive"] }
 getrandom = { version = "0.3", optional = true, default-features = false }
 log = { version = "0.4", optional = true }
 pretty_env_logger = { version = "0.5", optional = true }
-uniffi = { version = "0.31", optional = true }
+uniffi = { version = "=0.29.4", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 ```
 
@@ -74,10 +74,14 @@ wasm-bindgen = { version = "0.2", optional = true }
 
 ```rust
 mod app;
-pub mod ffi;
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+mod ffi;
 
 pub use app::*;
 pub use crux_core::Core;
+
+#[cfg(any(feature = "wasm_bindgen", feature = "uniffi"))]
+pub use ffi::CoreFFI;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
@@ -192,7 +196,7 @@ impl App for Counter {
     type ViewModel = ViewModel;
     type Effect = Effect;
 
-    fn update(&self, event: Event, model: &mut Model) -> Command {
+    fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         match event {
             Event::Navigate(route) => match route {
                 Route::Counter => match model.page {

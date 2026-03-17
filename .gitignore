@@ -1,4 +1,39 @@
 .DS_Store
 
+# Rust
 target/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+build/
+DerivedData/
+*.xcuserdata
+xcuserdata/
+
+# Compiled binary artifacts
+*.a
+*.o
+*.dylib
+*.so
+*.rlib
+*.rmeta
+*.pcm
+*.mdb
+*.d
+
+# Generated xcframeworks (rebuilt by cargo/crux)
+*.xcframework/
+
+# Cargo incremental compilation
+incremental/
+CACHEDIR.TAG
+.rustc_info.json
+.fingerprint/
+.cargo-lock
+
+# Temporary
 temp/

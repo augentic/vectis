@@ -1,0 +1,101 @@
+name: ios-shell
+version: 1
+description: iOS SwiftUI shell generation for a Crux application — proposal → shell-spec → tasks
+
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: Which app to build an iOS shell for, target directory, design notes
+    template: proposal.md
+    instruction: |
+      Create a lightweight proposal for the iOS shell.
+
+      Sections:
+      - **App Reference**: Which Crux app this shell is for (e.g., examples/opsx_todo).
+        The app must already have a generated shared crate with shared/src/app.rs.
+      - **Target Directory**: Where the iOS shell will be generated
+        (e.g., examples/opsx_todo/iOS). This becomes the project-dir argument for ios-writer.
+      - **Motivation**: Why this shell is being built (testing, production, learning).
+      - **Design System Notes**: Any overrides or customizations to the default
+        VectisDesign tokens for this app. Leave empty to use defaults.
+
+      Keep it concise — this is a planning document, not the full specification.
+    requires: []
+
+  - id: shell-spec
+    generates: shell-spec.md
+    description: iOS-specific UI details beyond the core spec
+    template: shell-spec.md
+    instruction: |
+      Create the iOS shell specification that complements the app's core spec
+      with platform-specific UI details.
+
+      This file MUST follow the ios-writer shell-spec-template format. It contains:
+
+      1. **Overview** — Which app and target directory.
+      2. **Target Directory** — Where the iOS shell will be generated.
+      3. **Navigation Style** — single, stack, or tabs. Map views to navigation structure.
+      4. **Screen Customizations** — Per-screen iOS-specific UI hints (swipe actions,
+         pull-to-refresh, toolbar items, etc.) that go beyond the core spec.
+      5. **Platform Features** — iOS-specific features (haptics, share sheet, widgets, etc.).
+      6. **Design System Overrides** — Token overrides for this specific app.
+
+      Read the app's shared/src/app.rs to understand the ViewModel variants, Event
+      variants, and Route enum. The screen customizations should reference these types.
+
+      Reference the proposal for motivation and design system decisions.
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: Implementation checklist for generating the iOS shell via ios-writer
+    template: tasks.md
+    instruction: |
+      Create the implementation task list for generating the iOS shell.
+
+      The tasks follow a standard pattern:
+
+      ## 1. Build Infrastructure
+      - [ ] 1.1 Run cargo xcode in the app directory to generate shared.xcodeproj
+      - [ ] 1.2 Create the target directory for the iOS shell
+
+      ## 2. Generate iOS Shell
+      - [ ] 2.1 Invoke the ios-writer skill with app-dir=<app-dir>
+            and project-dir=<target-dir>
+            (Read .cursor/skills/ios-writer/SKILL.md and follow its Create Mode process)
+
+      ## 3. Build Verification
+      - [ ] 3.1 Run make setup in the iOS directory
+      - [ ] 3.2 Run make build in the iOS directory
+      - [ ] 3.3 Run swiftformat --lint on the generated Swift files
+
+      ## 4. Code Review
+      - [ ] 4.1 Invoke the ios-reviewer skill with target-dir=<app-dir>
+            (Read .cursor/skills/ios-reviewer/SKILL.md and follow its process)
+      - [ ] 4.2 Address all Critical and Warning findings
+      - [ ] 4.3 Re-run make build and swiftformat --lint after fixes
+
+      Adapt the directory paths based on the proposal. The ios-writer skill
+      handles all code generation — these tasks orchestrate invoking it.
+    requires:
+      - shell-spec
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    Implement the tasks to generate the iOS shell.
+
+    IMPORTANT: Task 2.1 requires using the ios-writer skill. To do this:
+    1. Read the skill at .cursor/skills/ios-writer/SKILL.md
+    2. Read the shell-spec.md artifact from this change
+    3. Follow the ios-writer skill's Create Mode process with:
+       - app-dir = the app directory from the proposal
+       - project-dir = the target directory from the proposal
+
+    The ios-writer skill will read the Crux core's app.rs and its own reference
+    documentation to generate the complete iOS shell. Let it handle all code
+    generation decisions.
+
+    After generation, run the build verification tasks and code review.

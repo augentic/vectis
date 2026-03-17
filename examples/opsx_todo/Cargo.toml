@@ -4,15 +4,17 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.88"
 
 [workspace.dependencies]
-crux_core = { git = "https://github.com/redbadger/crux", branch = "master" }
-crux_http = { git = "https://github.com/redbadger/crux", branch = "master" }
-crux_kv = { git = "https://github.com/redbadger/crux", branch = "master" }
+crux_core = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
+crux_http = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
+crux_kv = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
+crux_time = { git = "https://github.com/redbadger/crux", tag = "crux_core-v0.17.0-rc3" }
 serde = "1.0"
 serde_json = "1.0"
 facet = "=0.31"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 [workspace.lints.rust]
 trivial_numeric_casts = "warn"

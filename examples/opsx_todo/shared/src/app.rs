@@ -1,60 +1,55 @@
+use chrono::{DateTime, Utc};
 use crux_core::{
-    macros::effect,
-    render::{render, RenderOperation},
     App, Command,
+    macros::effect,
+    render::{RenderOperation, render},
 };
 use crux_http::HttpRequest;
-use crux_kv::{error::KeyValueError, KeyValueOperation};
+use crux_kv::{KeyValueOperation, error::KeyValueError};
+use crux_time::TimeRequest;
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
 use crate::sse::{ServerSentEvents, SseMessage, SseRequest};
 
-const API_URL: &str = "https://api.example.com";
-const STORAGE_KEY: &str = "todo_state";
+// ── Constants ──────────────────────────────────────────────────────────────────
 
-type Http = crux_http::Http<Effect, Event>;
-type KeyValue = crux_kv::KeyValue<Effect, Event>;
+const API_BASE: &str = "https://api.example.com";
+const KV_STATE_KEY: &str = "todos:state";
+const RETRY_INTERVAL_SECS: u64 = 30;
 
-// ── Domain types ──
+// ── Domain types ───────────────────────────────────────────────────────────────
 
+/// A single to-do item.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TodoItem {
     pub id: String,
     pub title: String,
     pub completed: bool,
-    pub updated_at: String,
+    pub updated_at: DateTime<Utc>,
 }
 
+/// A queued mutation waiting to be sent to the server.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum PendingOp {
     Create(TodoItem),
     Update(TodoItem),
-    Delete { id: String, deleted_at: String },
+    Delete {
+        item_id: String,
+        deleted_at: DateTime<Utc>,
+    },
 }
 
 impl PendingOp {
     fn item_id(&self) -> &str {
         match self {
             Self::Create(item) | Self::Update(item) => &item.id,
-            Self::Delete { id, .. } => id,
+            Self::Delete { item_id, .. } => item_id,
         }
     }
 }
 
-#[derive(Serialize)]
-struct TodoCreateBody {
-    id: String,
-    title: String,
-    completed: bool,
-}
-
-#[derive(Serialize)]
-struct TodoUpdateBody {
-    title: String,
-    completed: bool,
-}
-
+/// Filter for the visible item list.
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub enum Filter {
@@ -64,7 +59,9 @@ pub enum Filter {
     Completed,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+/// Current synchronisation status.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub enum SyncStatus {
     #[default]
     Idle,
@@ -72,38 +69,58 @@ pub enum SyncStatus {
     Offline,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-pub enum SseConnectionState {
+/// SSE connection state.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub enum SseState {
     #[default]
     Disconnected,
     Connecting,
     Connected,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+/// Body for `POST /api/todos`.
+#[derive(Serialize)]
+struct CreateRequest {
+    id: String,
+    title: String,
+    completed: bool,
+}
+
+/// Body for `PUT /api/todos/{id}`.
+#[derive(Serialize)]
+struct UpdateRequest {
+    title: String,
+    completed: bool,
+}
+
+/// Payload in SSE `item_deleted` events.
+#[derive(Deserialize)]
+struct DeletedPayload {
+    id: String,
+}
+
+/// State persisted to key-value storage.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
 struct PersistedState {
     items: Vec<TodoItem>,
     pending_ops: Vec<PendingOp>,
 }
 
-/// Payload for SSE `item_deleted` events.
-#[derive(Deserialize)]
-struct DeletePayload {
-    id: String,
-}
-
-// ── Page (internal) ──
+// ── Page (internal) ────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 enum Page {
     #[default]
     Loading,
-    TodoList,
     Error,
+    TodoList,
 }
 
-// ── Route (shell-navigable) ──
+// ── Route (shell-facing) ───────────────────────────────────────────────────────
 
+/// Shell-navigable destinations.
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub enum Route {
@@ -111,86 +128,90 @@ pub enum Route {
     TodoList,
 }
 
-// ── Model ──
+// ── Model ──────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 pub struct Model {
     page: Page,
     items: Vec<TodoItem>,
     pending_ops: Vec<PendingOp>,
-    /// Item ID of the currently in-flight sync operation.
-    syncing_id: Option<String>,
     filter: Filter,
     sync_status: SyncStatus,
-    sse_state: SseConnectionState,
-    input_text: String,
+    sse_state: SseState,
+    new_title: String,
+    /// Item ID of the currently in-flight sync operation.
+    syncing_id: Option<String>,
     error_message: Option<String>,
 }
 
-// ── Per-page view structs ──
+// ── Per-page view structs ──────────────────────────────────────────────────────
 
-#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
-pub struct TodoItemView {
-    pub id: String,
-    pub title: String,
-    pub completed: bool,
-}
-
-#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
-pub struct TodoListView {
-    pub items: Vec<TodoItemView>,
-    pub input_text: String,
-    pub active_count: String,
-    pub pending_count: String,
-    pub sync_status: String,
-    pub filter: Filter,
-    pub show_clear_completed: bool,
-}
-
+/// View data for the error page.
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ErrorView {
     pub message: String,
     pub can_retry: bool,
 }
 
-// ── ViewModel ──
+/// View data for a single to-do item in the list.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TodoItemView {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+}
+
+/// View data for the main to-do list page.
+#[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TodoListView {
+    pub items: Vec<TodoItemView>,
+    pub new_title: String,
+    pub active_count: usize,
+    pub has_completed: bool,
+    pub filter: Filter,
+    pub sync_status: SyncStatus,
+    pub sse_state: SseState,
+    pub pending_count: usize,
+}
+
+// ── ViewModel ──────────────────────────────────────────────────────────────────
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, Default)]
 #[repr(C)]
 pub enum ViewModel {
     #[default]
     Loading,
-    TodoList(TodoListView),
     Error(ErrorView),
+    TodoList(TodoListView),
 }
 
-// ── Event ──
+// ── Event ──────────────────────────────────────────────────────────────────────
 
 #[derive(Facet, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub enum Event {
     // Shell-facing events
-    Initialize,
     Navigate(Route),
-    SetInput(String),
-    AddTodo(String, String),
-    EditTitle(String, String, String),
-    ToggleCompleted(String, String),
-    DeleteTodo(String, String),
-    ClearCompleted(String),
+    SetNewTitle(String),
+    AddTodo { id: String },
+    EditTitle { id: String, title: String },
+    ToggleTodo(String),
+    DeleteTodo(String),
+    ClearCompleted,
     SetFilter(Filter),
-    RetrySync,
-    ConnectSse,
-    SseDisconnected,
 
-    // Internal events (effect callbacks)
+    // Internal events
+    #[serde(skip)]
+    #[facet(skip)]
+    Initialize,
+
     #[serde(skip)]
     #[facet(skip)]
     DataLoaded(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
 
     #[serde(skip)]
     #[facet(skip)]
-    DataSaved(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
+    StateSaved(#[facet(opaque)] Result<Option<Vec<u8>>, KeyValueError>),
 
     #[serde(skip)]
     #[facet(skip)]
@@ -198,18 +219,53 @@ pub enum Event {
 
     #[serde(skip)]
     #[facet(skip)]
-    OpResponse(#[facet(opaque)] crux_http::Result<crux_http::Response<TodoItem>>),
+    OpSynced(#[facet(opaque)] crux_http::Result<crux_http::Response<TodoItem>>),
 
     #[serde(skip)]
     #[facet(skip)]
-    DeleteOpResponse(#[facet(opaque)] crux_http::Result<crux_http::Response<String>>),
+    DeleteSynced(#[facet(opaque)] crux_http::Result<crux_http::Response<String>>),
 
     #[serde(skip)]
     #[facet(skip)]
-    SseReceived(#[facet(opaque)] SseMessage),
+    SseEvent(#[facet(opaque)] SseMessage),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    ConnectSse,
+
+    #[serde(skip)]
+    #[facet(skip)]
+    StartSync,
+
+    #[serde(skip)]
+    #[facet(skip)]
+    SyncTimerFired(#[facet(opaque)] crux_time::TimerOutcome),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    CreateWithTime(#[facet(opaque)] std::time::SystemTime, String, String),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    EditWithTime(#[facet(opaque)] std::time::SystemTime, String, String),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    ToggleWithTime(#[facet(opaque)] std::time::SystemTime, String),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    DeleteWithTime(#[facet(opaque)] std::time::SystemTime, String),
+
+    #[serde(skip)]
+    #[facet(skip)]
+    ClearCompletedWithTime(
+        #[facet(opaque)] std::time::SystemTime,
+        #[facet(opaque)] Vec<String>,
+    ),
 }
 
-// ── Effect ──
+// ── Effect ─────────────────────────────────────────────────────────────────────
 
 #[effect(facet_typegen)]
 #[derive(Debug)]
@@ -217,378 +273,77 @@ pub enum Effect {
     Render(RenderOperation),
     Http(HttpRequest),
     KeyValue(KeyValueOperation),
+    Time(TimeRequest),
     ServerSentEvents(SseRequest),
 }
 
-// ── App ──
+// ── Type aliases ───────────────────────────────────────────────────────────────
+
+type Http = crux_http::Http<Effect, Event>;
+type KeyValue = crux_kv::KeyValue<Effect, Event>;
+type Time = crux_time::Time<Effect, Event>;
+
+// ── App ────────────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
 pub struct TodoApp;
 
-// ── Helpers ──
-
-fn save_state(model: &Model) -> Command<Effect, Event> {
-    let state = PersistedState {
-        items: model.items.clone(),
-        pending_ops: model.pending_ops.clone(),
-    };
-    let bytes = serde_json::to_vec(&state).expect("serializing PersistedState");
-    KeyValue::set(STORAGE_KEY, bytes).then_send(Event::DataSaved)
-}
-
-fn start_sync(model: &mut Model) -> Command<Effect, Event> {
-    if model.pending_ops.is_empty() {
-        model.sync_status = SyncStatus::Idle;
-        return render();
-    }
-    if model.sync_status == SyncStatus::Syncing {
-        return Command::done();
-    }
-    model.sync_status = SyncStatus::Syncing;
-
-    let op = model.pending_ops[0].clone();
-    model.syncing_id = Some(op.item_id().to_string());
-
-    match op {
-        PendingOp::Create(item) => {
-            let body = TodoCreateBody {
-                id: item.id,
-                title: item.title,
-                completed: item.completed,
-            };
-            Http::post(format!("{API_URL}/api/todos"))
-                .body_json(&body)
-                .expect("serializing TodoCreateBody")
-                .expect_json()
-                .build()
-                .then_send(Event::OpResponse)
-        }
-        PendingOp::Update(item) => {
-            let body = TodoUpdateBody {
-                title: item.title,
-                completed: item.completed,
-            };
-            Http::put(format!("{API_URL}/api/todos/{}", item.id))
-                .body_json(&body)
-                .expect("serializing TodoUpdateBody")
-                .expect_json()
-                .build()
-                .then_send(Event::OpResponse)
-        }
-        PendingOp::Delete { id, .. } => Http::delete(format!("{API_URL}/api/todos/{id}"))
-            .expect_string()
-            .build()
-            .then_send(Event::DeleteOpResponse),
-    }
-}
-
-fn update_or_insert_item(items: &mut Vec<TodoItem>, item: &TodoItem) {
-    if let Some(existing) = items.iter_mut().find(|i| i.id == item.id) {
-        *existing = item.clone();
-    } else {
-        items.push(item.clone());
-    }
-}
-
-/// Apply a server-delivered item, respecting last-writer-wins conflict
-/// resolution when the item has a pending local mutation.
-fn apply_server_item(model: &mut Model, server_item: &TodoItem) {
-    let has_pending = model
-        .pending_ops
-        .iter()
-        .any(|op| op.item_id() == server_item.id);
-
-    if has_pending {
-        let server_wins = model
-            .items
-            .iter()
-            .find(|i| i.id == server_item.id)
-            .is_none_or(|local_item| server_item.updated_at >= local_item.updated_at);
-
-        if server_wins {
-            update_or_insert_item(&mut model.items, server_item);
-            if model.syncing_id.as_deref() != Some(&server_item.id) {
-                model
-                    .pending_ops
-                    .retain(|op| op.item_id() != server_item.id);
-            }
-        }
-    } else {
-        update_or_insert_item(&mut model.items, server_item);
-    }
-}
-
-/// Merge a full item list from the server with local state, preserving
-/// items that have pending create operations not yet on the server.
-fn merge_server_items(model: &mut Model, server_items: &[TodoItem]) {
-    let mut merged = Vec::new();
-
-    for server_item in server_items {
-        let has_pending = model
-            .pending_ops
-            .iter()
-            .any(|op| op.item_id() == server_item.id);
-
-        if has_pending {
-            let server_wins = model
-                .items
-                .iter()
-                .find(|i| i.id == server_item.id)
-                .is_none_or(|local_item| server_item.updated_at >= local_item.updated_at);
-
-            if server_wins {
-                merged.push(server_item.clone());
-                if model.syncing_id.as_deref() != Some(&server_item.id) {
-                    model
-                        .pending_ops
-                        .retain(|op| op.item_id() != server_item.id);
-                }
-            } else if let Some(local_item) =
-                model.items.iter().find(|i| i.id == server_item.id)
-            {
-                merged.push(local_item.clone());
-            } else {
-                merged.push(server_item.clone());
-            }
-        } else {
-            merged.push(server_item.clone());
-        }
-    }
-
-    for op in &model.pending_ops {
-        if let PendingOp::Create(item) = op
-            && !merged.iter().any(|i| i.id == item.id)
-        {
-            merged.push(item.clone());
-        }
-    }
-
-    model.items = merged;
-}
-
-// ── App implementation ──
-
-#[allow(clippy::too_many_lines)]
 impl App for TodoApp {
     type Event = Event;
     type Model = Model;
     type ViewModel = ViewModel;
     type Effect = Effect;
 
+    #[allow(clippy::too_many_lines)]
     fn update(&self, event: Event, model: &mut Model) -> Command<Effect, Event> {
         match event {
-            Event::Initialize => KeyValue::get(STORAGE_KEY).then_send(Event::DataLoaded),
-
+            // ── Navigation ─────────────────────────────────────────────────
             Event::Navigate(route) => match route {
                 Route::TodoList => match model.page {
-                    Page::Error => {
+                    Page::Error | Page::Loading => {
                         model.page = Page::Loading;
                         model.error_message = None;
                         render().and(Command::event(Event::Initialize))
                     }
-                    Page::Loading | Page::TodoList => Command::done(),
+                    Page::TodoList => Command::done(),
                 },
             },
 
-            Event::SetInput(text) => {
-                model.input_text = text;
-                render()
+            // ── Initialization ─────────────────────────────────────────────
+            Event::Initialize => {
+                KeyValue::get(KV_STATE_KEY).then_send(Event::DataLoaded)
             }
-
-            Event::AddTodo(id, timestamp) => {
-                let title = model.input_text.trim().to_string();
-                if title.is_empty() {
-                    return Command::done();
-                }
-
-                let item = TodoItem {
-                    id,
-                    title,
-                    completed: false,
-                    updated_at: timestamp,
-                };
-
-                model.items.push(item.clone());
-                model.pending_ops.push(PendingOp::Create(item));
-                model.input_text = String::new();
-
-                let save = save_state(model);
-                let sync = start_sync(model);
-                render().and(save).and(sync)
-            }
-
-            Event::EditTitle(id, new_title, timestamp) => {
-                let new_title = new_title.trim().to_string();
-                if new_title.is_empty() {
-                    return Command::done();
-                }
-                if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
-                    item.title = new_title;
-                    item.updated_at = timestamp;
-                    model.pending_ops.push(PendingOp::Update(item.clone()));
-
-                    let save = save_state(model);
-                    let sync = start_sync(model);
-                    render().and(save).and(sync)
-                } else {
-                    Command::done()
-                }
-            }
-
-            Event::ToggleCompleted(id, timestamp) => {
-                if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
-                    item.completed = !item.completed;
-                    item.updated_at = timestamp;
-                    model.pending_ops.push(PendingOp::Update(item.clone()));
-
-                    let save = save_state(model);
-                    let sync = start_sync(model);
-                    render().and(save).and(sync)
-                } else {
-                    Command::done()
-                }
-            }
-
-            Event::DeleteTodo(id, timestamp) => {
-                model.items.retain(|i| i.id != id);
-
-                let mut saw_create = false;
-                let mut saw_non_create = false;
-                model.pending_ops.retain(|op| match op {
-                    PendingOp::Create(item) if item.id == id => {
-                        saw_create = true;
-                        false
-                    }
-                    PendingOp::Update(item) if item.id == id => {
-                        saw_non_create = true;
-                        false
-                    }
-                    PendingOp::Delete { id: d, .. } if *d == id => {
-                        saw_non_create = true;
-                        false
-                    }
-                    _ => true,
-                });
-                if !saw_create || saw_non_create {
-                    model.pending_ops.push(PendingOp::Delete {
-                        id,
-                        deleted_at: timestamp,
-                    });
-                }
-
-                let save = save_state(model);
-                let sync = start_sync(model);
-                render().and(save).and(sync)
-            }
-
-            Event::ClearCompleted(timestamp) => {
-                let completed_ids: Vec<String> = model
-                    .items
-                    .iter()
-                    .filter(|i| i.completed)
-                    .map(|i| i.id.clone())
-                    .collect();
-
-                if completed_ids.is_empty() {
-                    return Command::done();
-                }
-
-                model.items.retain(|i| !i.completed);
-
-                for id in completed_ids {
-                    let mut saw_create = false;
-                    let mut saw_non_create = false;
-                    model.pending_ops.retain(|op| match op {
-                        PendingOp::Create(item) if item.id == id => {
-                            saw_create = true;
-                            false
-                        }
-                        PendingOp::Update(item) if item.id == id => {
-                            saw_non_create = true;
-                            false
-                        }
-                        PendingOp::Delete { id: d, .. } if *d == id => {
-                            saw_non_create = true;
-                            false
-                        }
-                        _ => true,
-                    });
-                    if saw_create && !saw_non_create {
-                        continue;
-                    }
-                    model.pending_ops.push(PendingOp::Delete {
-                        id,
-                        deleted_at: timestamp.clone(),
-                    });
-                }
-
-                let save = save_state(model);
-                let sync = start_sync(model);
-                render().and(save).and(sync)
-            }
-
-            Event::SetFilter(filter) => {
-                model.filter = filter;
-                render()
-            }
-
-            Event::RetrySync => {
-                let sync = start_sync(model);
-                render().and(sync)
-            }
-
-            Event::ConnectSse => {
-                model.sse_state = SseConnectionState::Connecting;
-                render().and(
-                    ServerSentEvents::get_events(format!("{API_URL}/api/todos/events"))
-                        .then_send(Event::SseReceived),
-                )
-            }
-
-            Event::SseDisconnected => {
-                model.sse_state = SseConnectionState::Disconnected;
-                render().and(
-                    Http::get(format!("{API_URL}/api/todos"))
-                        .expect_json()
-                        .build()
-                        .then_send(Event::ItemsFetched),
-                )
-            }
-
-            // ── Internal event handlers ──
 
             Event::DataLoaded(Ok(Some(bytes))) => {
-                let state: PersistedState = match serde_json::from_slice(&bytes) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::error!("Failed to deserialize persisted state: {e}");
-                        PersistedState::default()
-                    }
-                };
-                model.items = state.items;
-                model.pending_ops = state.pending_ops;
-                model.page = Page::TodoList;
+                if let Ok(state) =
+                    serde_json::from_slice::<PersistedState>(&bytes)
+                {
+                    model.items = state.items;
+                    model.pending_ops = state.pending_ops;
+                    model.page = Page::TodoList;
 
-                Command::all([
-                    render(),
-                    Command::event(Event::ConnectSse),
-                    Http::get(format!("{API_URL}/api/todos"))
-                        .expect_json()
-                        .build()
-                        .then_send(Event::ItemsFetched),
-                ])
+                    Command::all([
+                        render(),
+                        Command::event(Event::ConnectSse),
+                        Command::event(Event::StartSync),
+                        fetch_items(),
+                    ])
+                } else {
+                    model.page = Page::TodoList;
+                    Command::all([
+                        render(),
+                        Command::event(Event::ConnectSse),
+                        fetch_items(),
+                    ])
+                }
             }
 
             Event::DataLoaded(Ok(None)) => {
                 model.page = Page::TodoList;
-
                 Command::all([
                     render(),
                     Command::event(Event::ConnectSse),
-                    Http::get(format!("{API_URL}/api/todos"))
-                        .expect_json()
-                        .build()
-                        .then_send(Event::ItemsFetched),
+                    fetch_items(),
                 ])
             }
 
@@ -598,101 +353,245 @@ impl App for TodoApp {
                 render()
             }
 
-            Event::DataSaved(Ok(_)) => Command::done(),
-            Event::DataSaved(Err(e)) => {
-                log::error!("Failed to save state: {e}");
-                Command::done()
+            // ── User actions ───────────────────────────────────────────────
+            Event::SetNewTitle(title) => {
+                model.new_title = title;
+                render()
             }
 
-            Event::ItemsFetched(Ok(mut response)) => {
-                let server_items = response.take_body().unwrap_or_default();
-                merge_server_items(model, &server_items);
+            Event::AddTodo { id } => {
+                let title = model.new_title.trim().to_string();
+                if title.is_empty() {
+                    return Command::done();
+                }
+                model.new_title = String::new();
+                render().and(
+                    Time::now().then_send(move |t| Event::CreateWithTime(t, id, title)),
+                )
+            }
 
-                let save = save_state(model);
-                let sync = start_sync(model);
-                let reconnect = if model.sse_state == SseConnectionState::Disconnected {
-                    Command::event(Event::ConnectSse)
+            Event::CreateWithTime(system_time, id, title) => {
+                let updated_at: DateTime<Utc> = system_time.into();
+                let item = TodoItem {
+                    id,
+                    title,
+                    completed: false,
+                    updated_at,
+                };
+                model.items.push(item.clone());
+                model.pending_ops.push(PendingOp::Create(item));
+                save_state(model).and(Command::event(Event::StartSync))
+            }
+
+            Event::EditTitle { id, title } => {
+                let title = title.trim().to_string();
+                if title.is_empty() {
+                    return Command::done();
+                }
+                if model.items.iter().any(|i| i.id == id) {
+                    Time::now().then_send(move |t| Event::EditWithTime(t, id, title))
                 } else {
                     Command::done()
-                };
-                render().and(save).and(sync).and(reconnect)
+                }
             }
 
+            Event::EditWithTime(system_time, id, title) => {
+                let updated_at: DateTime<Utc> = system_time.into();
+                if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
+                    item.title = title;
+                    item.updated_at = updated_at;
+                    model
+                        .pending_ops
+                        .retain(|op| !matches!(op, PendingOp::Update(i) if i.id == id));
+                    model.pending_ops.push(PendingOp::Update(item.clone()));
+                    save_state(model).and(Command::event(Event::StartSync))
+                } else {
+                    Command::done()
+                }
+            }
+
+            Event::ToggleTodo(id) => {
+                if model.items.iter().any(|i| i.id == id) {
+                    Time::now().then_send(move |t| Event::ToggleWithTime(t, id))
+                } else {
+                    Command::done()
+                }
+            }
+
+            Event::ToggleWithTime(system_time, id) => {
+                let updated_at: DateTime<Utc> = system_time.into();
+                if let Some(item) = model.items.iter_mut().find(|i| i.id == id) {
+                    item.completed = !item.completed;
+                    item.updated_at = updated_at;
+                    model
+                        .pending_ops
+                        .retain(|op| !matches!(op, PendingOp::Update(i) if i.id == id));
+                    model.pending_ops.push(PendingOp::Update(item.clone()));
+                    save_state(model).and(Command::event(Event::StartSync))
+                } else {
+                    Command::done()
+                }
+            }
+
+            Event::DeleteTodo(id) => {
+                let is_create_only = model
+                    .pending_ops
+                    .iter()
+                    .any(|op| matches!(op, PendingOp::Create(item) if item.id == id));
+                model.items.retain(|item| item.id != id);
+                if is_create_only {
+                    model.pending_ops.retain(|op| op.item_id() != id);
+                    save_state(model)
+                } else {
+                    render().and(
+                        Time::now()
+                            .then_send(move |t| Event::DeleteWithTime(t, id)),
+                    )
+                }
+            }
+
+            Event::DeleteWithTime(system_time, id) => {
+                let deleted_at: DateTime<Utc> = system_time.into();
+                model.pending_ops.retain(|op| op.item_id() != id);
+                model.pending_ops.push(PendingOp::Delete {
+                    item_id: id,
+                    deleted_at,
+                });
+                save_state(model).and(Command::event(Event::StartSync))
+            }
+
+            Event::ClearCompleted => {
+                let completed_ids: Vec<String> = model
+                    .items
+                    .iter()
+                    .filter(|item| item.completed)
+                    .map(|item| item.id.clone())
+                    .collect();
+
+                if completed_ids.is_empty() {
+                    return Command::done();
+                }
+
+                model.items.retain(|item| !item.completed);
+
+                let mut create_only_ids = Vec::new();
+                let mut needs_delete_ids = Vec::new();
+                for id in completed_ids {
+                    if model
+                        .pending_ops
+                        .iter()
+                        .any(|op| matches!(op, PendingOp::Create(item) if item.id == id))
+                    {
+                        create_only_ids.push(id);
+                    } else {
+                        needs_delete_ids.push(id);
+                    }
+                }
+
+                for id in &create_only_ids {
+                    model.pending_ops.retain(|op| op.item_id() != *id);
+                }
+
+                if needs_delete_ids.is_empty() {
+                    return save_state(model);
+                }
+
+                render().and(Time::now().then_send(move |t| {
+                    Event::ClearCompletedWithTime(t, needs_delete_ids)
+                }))
+            }
+
+            Event::ClearCompletedWithTime(system_time, ids) => {
+                let deleted_at: DateTime<Utc> = system_time.into();
+                for id in ids {
+                    model.pending_ops.retain(|op| op.item_id() != id);
+                    model.pending_ops.push(PendingOp::Delete {
+                        item_id: id,
+                        deleted_at,
+                    });
+                }
+                save_state(model).and(Command::event(Event::StartSync))
+            }
+
+            Event::SetFilter(filter) => {
+                model.filter = filter;
+                render()
+            }
+
+            // ── Server data ────────────────────────────────────────────────
+            Event::ItemsFetched(Ok(mut response)) => {
+                let server_items = response.take_body().unwrap_or_default();
+                for server_item in &server_items {
+                    apply_server_item(model, server_item);
+                }
+                save_state(model)
+            }
+
+            #[allow(clippy::match_same_arms)]
             Event::ItemsFetched(Err(_)) => {
                 model.sync_status = SyncStatus::Offline;
                 render()
             }
 
-            Event::OpResponse(Ok(mut response)) => {
+            // ── Sync queue ─────────────────────────────────────────────────
+            Event::StartSync => start_sync(model),
+
+            Event::OpSynced(Ok(mut response)) => {
                 if let Some(server_item) = response.take_body() {
-                    update_or_insert_item(&mut model.items, &server_item);
+                    apply_server_item(model, &server_item);
                 }
-                if let Some(synced_id) = model.syncing_id.take()
-                    && !model.pending_ops.is_empty()
-                    && model.pending_ops[0].item_id() == synced_id
-                {
-                    model.pending_ops.remove(0);
+                if let Some(synced_id) = model.syncing_id.take() {
+                    model.pending_ops.retain(|op| op.item_id() != synced_id);
                 }
                 model.sync_status = SyncStatus::Idle;
-
-                let save = save_state(model);
-                let sync = start_sync(model);
-                render().and(save).and(sync)
+                save_state(model).and(Command::event(Event::StartSync))
             }
 
-            Event::OpResponse(Err(_)) | Event::DeleteOpResponse(Err(_)) => {
+            Event::OpSynced(Err(_)) | Event::DeleteSynced(Err(_)) => {
                 model.syncing_id = None;
+                model.sync_status = SyncStatus::Offline;
+                save_state(model).and(start_retry_timer())
+            }
+
+            Event::DeleteSynced(Ok(_)) => {
+                if let Some(synced_id) = model.syncing_id.take() {
+                    model.pending_ops.retain(|op| op.item_id() != synced_id);
+                }
+                model.sync_status = SyncStatus::Idle;
+                save_state(model).and(Command::event(Event::StartSync))
+            }
+
+            Event::StateSaved(Ok(_)) => Command::done(),
+            Event::StateSaved(Err(_)) => {
                 model.sync_status = SyncStatus::Offline;
                 render()
             }
 
-            Event::DeleteOpResponse(Ok(_)) => {
-                if let Some(synced_id) = model.syncing_id.take()
-                    && !model.pending_ops.is_empty()
-                    && model.pending_ops[0].item_id() == synced_id
-                {
-                    model.pending_ops.remove(0);
-                }
-                model.sync_status = SyncStatus::Idle;
-
-                let save = save_state(model);
-                let sync = start_sync(model);
-                render().and(save).and(sync)
+            // ── SSE ────────────────────────────────────────────────────────
+            Event::ConnectSse => {
+                model.sse_state = SseState::Connecting;
+                let url = format!("{API_BASE}/api/todos/events");
+                render().and(
+                    ServerSentEvents::get_events(url).then_send(Event::SseEvent),
+                )
             }
 
-            Event::SseReceived(msg) => {
-                if model.sse_state != SseConnectionState::Connected {
-                    model.sse_state = SseConnectionState::Connected;
+            Event::SseEvent(msg) => {
+                if model.sse_state != SseState::Connected {
+                    model.sse_state = SseState::Connected;
                 }
+                handle_sse_message(model, &msg)
+            }
 
-                match msg.event.as_str() {
-                    "item_created" | "item_updated" => {
-                        if let Ok(server_item) =
-                            serde_json::from_slice::<TodoItem>(&msg.data)
-                        {
-                            apply_server_item(model, &server_item);
-                            let save = save_state(model);
-                            return render().and(save);
-                        }
-                        Command::done()
-                    }
-                    "item_deleted" => {
-                        if let Ok(payload) =
-                            serde_json::from_slice::<DeletePayload>(&msg.data)
-                        {
-                            model.items.retain(|item| item.id != payload.id);
-                            if model.syncing_id.as_deref() != Some(payload.id.as_str()) {
-                                model
-                                    .pending_ops
-                                    .retain(|op| op.item_id() != payload.id);
-                            }
-                            let save = save_state(model);
-                            return render().and(save);
-                        }
-                        Command::done()
-                    }
-                    _ => Command::done(),
+            // ── Timer ──────────────────────────────────────────────────────
+            Event::SyncTimerFired(_) => {
+                if model.sync_status == SyncStatus::Offline {
+                    model.sync_status = SyncStatus::Idle;
                 }
+                Command::all([
+                    Command::event(Event::StartSync),
+                    fetch_items(),
+                ])
             }
         }
     }
@@ -700,65 +599,221 @@ impl App for TodoApp {
     fn view(&self, model: &Self::Model) -> Self::ViewModel {
         match model.page {
             Page::Loading => ViewModel::Loading,
-            Page::TodoList => {
-                let filtered_items: Vec<TodoItemView> = model
-                    .items
-                    .iter()
-                    .filter(|item| match model.filter {
-                        Filter::All => true,
-                        Filter::Active => !item.completed,
-                        Filter::Completed => item.completed,
-                    })
-                    .map(|item| TodoItemView {
-                        id: item.id.clone(),
-                        title: item.title.clone(),
-                        completed: item.completed,
-                    })
-                    .collect();
-
-                let active_count = model.items.iter().filter(|i| !i.completed).count();
-                let pending_count = model.pending_ops.len();
-                let has_completed = model.items.iter().any(|i| i.completed);
-
-                let sync_status = match model.sync_status {
-                    SyncStatus::Idle if pending_count == 0 => "synced".to_string(),
-                    SyncStatus::Idle => format!("{pending_count} pending"),
-                    SyncStatus::Syncing => format!("syncing ({pending_count} pending)"),
-                    SyncStatus::Offline => "offline".to_string(),
-                };
-
-                ViewModel::TodoList(TodoListView {
-                    items: filtered_items,
-                    input_text: model.input_text.clone(),
-                    active_count: format!(
-                        "{active_count} item{} left",
-                        if active_count == 1 { "" } else { "s" }
-                    ),
-                    pending_count: pending_count.to_string(),
-                    sync_status,
-                    filter: model.filter.clone(),
-                    show_clear_completed: has_completed,
-                })
-            }
             Page::Error => ViewModel::Error(ErrorView {
                 message: model.error_message.clone().unwrap_or_default(),
                 can_retry: true,
             }),
+            Page::TodoList => {
+                let filtered = filtered_items(&model.items, &model.filter);
+                let active_count = model.items.iter().filter(|i| !i.completed).count();
+                let has_completed = model.items.iter().any(|i| i.completed);
+
+                ViewModel::TodoList(TodoListView {
+                    items: filtered,
+                    new_title: model.new_title.clone(),
+                    active_count,
+                    has_completed,
+                    filter: model.filter.clone(),
+                    sync_status: model.sync_status.clone(),
+                    sse_state: model.sse_state.clone(),
+                    pending_count: model.pending_ops.len(),
+                })
+            }
         }
     }
 }
 
+// ── Helper functions ───────────────────────────────────────────────────────────
+
+fn save_state(model: &Model) -> Command<Effect, Event> {
+    let state = PersistedState {
+        items: model.items.clone(),
+        pending_ops: model.pending_ops.clone(),
+    };
+    let bytes = serde_json::to_vec(&state).expect("serializing PersistedState");
+    render().and(KeyValue::set(KV_STATE_KEY, bytes).then_send(Event::StateSaved))
+}
+
+fn start_sync(model: &mut Model) -> Command<Effect, Event> {
+    if model.pending_ops.is_empty() {
+        if model.sync_status != SyncStatus::Idle {
+            model.sync_status = SyncStatus::Idle;
+            return render();
+        }
+        return Command::done();
+    }
+    if model.sync_status == SyncStatus::Syncing {
+        return Command::done();
+    }
+
+    model.sync_status = SyncStatus::Syncing;
+    let op = model.pending_ops[0].clone();
+    model.syncing_id = Some(op.item_id().to_string());
+
+    match op {
+        PendingOp::Create(item) => {
+            let url = format!("{API_BASE}/api/todos");
+            let body = CreateRequest {
+                id: item.id,
+                title: item.title,
+                completed: item.completed,
+            };
+            Http::post(&url)
+                .body_json(&body)
+                .expect("serializing CreateRequest")
+                .expect_json()
+                .build()
+                .then_send(Event::OpSynced)
+        }
+        PendingOp::Update(item) => {
+            let url = format!("{API_BASE}/api/todos/{}", item.id);
+            let body = UpdateRequest {
+                title: item.title,
+                completed: item.completed,
+            };
+            Http::put(&url)
+                .body_json(&body)
+                .expect("serializing UpdateRequest")
+                .expect_json()
+                .build()
+                .then_send(Event::OpSynced)
+        }
+        PendingOp::Delete { item_id, .. } => {
+            let url = format!("{API_BASE}/api/todos/{item_id}");
+            Http::delete(&url)
+                .expect_string()
+                .build()
+                .then_send(Event::DeleteSynced)
+        }
+    }
+}
+
+fn start_retry_timer() -> Command<Effect, Event> {
+    Time::notify_after(std::time::Duration::from_secs(RETRY_INTERVAL_SECS))
+        .0
+        .then_send(Event::SyncTimerFired)
+}
+
+fn fetch_items() -> Command<Effect, Event> {
+    let url = format!("{API_BASE}/api/todos");
+    Http::get(&url)
+        .expect_json()
+        .build()
+        .then_send(Event::ItemsFetched)
+}
+
+/// Merge a server-provided item using last-writer-wins. The server version wins
+/// on timestamp ties. Handles delete conflicts by comparing `deleted_at`.
+fn apply_server_item(model: &mut Model, server_item: &TodoItem) {
+    let pending_delete_at = model.pending_ops.iter().find_map(|op| {
+        if let PendingOp::Delete {
+            item_id,
+            deleted_at,
+        } = op
+            && item_id == &server_item.id
+        {
+            return Some(*deleted_at);
+        }
+        None
+    });
+
+    if let Some(deleted_at) = pending_delete_at {
+        if server_item.updated_at >= deleted_at {
+            model
+                .pending_ops
+                .retain(|op| op.item_id() != server_item.id);
+            if let Some(local_item) =
+                model.items.iter_mut().find(|i| i.id == server_item.id)
+            {
+                *local_item = server_item.clone();
+            } else {
+                model.items.push(server_item.clone());
+            }
+        }
+        return;
+    }
+
+    if let Some(local_item) = model.items.iter_mut().find(|i| i.id == server_item.id) {
+        if server_item.updated_at >= local_item.updated_at {
+            *local_item = server_item.clone();
+            model
+                .pending_ops
+                .retain(|op| op.item_id() != server_item.id);
+        }
+    } else {
+        model.items.push(server_item.clone());
+    }
+}
+
+fn handle_sse_message(model: &mut Model, msg: &SseMessage) -> Command<Effect, Event> {
+    match msg.event_type.as_str() {
+        "item_created" | "item_updated" => {
+            serde_json::from_slice::<TodoItem>(&msg.data).map_or_else(
+                |_| Command::done(),
+                |server_item| {
+                    apply_server_item(model, &server_item);
+                    save_state(model)
+                },
+            )
+        }
+        "item_deleted" => {
+            match serde_json::from_slice::<DeletedPayload>(&msg.data) {
+                Ok(payload) => {
+                    model.items.retain(|item| item.id != payload.id);
+                    let is_syncing =
+                        model.syncing_id.as_deref() == Some(payload.id.as_str());
+                    if !is_syncing {
+                        model
+                            .pending_ops
+                            .retain(|op| op.item_id() != payload.id);
+                    }
+                    save_state(model)
+                }
+                Err(_) => Command::done(),
+            }
+        }
+        _ => Command::done(),
+    }
+}
+
+fn filtered_items(items: &[TodoItem], filter: &Filter) -> Vec<TodoItemView> {
+    items
+        .iter()
+        .filter(|item| match filter {
+            Filter::All => true,
+            Filter::Active => !item.completed,
+            Filter::Completed => item.completed,
+        })
+        .map(|item| TodoItemView {
+            id: item.id.clone(),
+            title: item.title.clone(),
+            completed: item.completed,
+        })
+        .collect()
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crux_core::App;
+    use crux_time::{Instant as TimeInstant, TimeResponse};
 
     fn make_item(id: &str, title: &str, completed: bool) -> TodoItem {
         TodoItem {
             id: id.to_string(),
             title: title.to_string(),
             completed,
-            updated_at: "2025-06-15T10:30:00Z".to_string(),
+            updated_at: DateTime::default(),
+        }
+    }
+
+    fn make_item_at(id: &str, title: &str, completed: bool, secs: i64) -> TodoItem {
+        TodoItem {
+            id: id.to_string(),
+            title: title.to_string(),
+            completed,
+            updated_at: DateTime::from_timestamp(secs, 0).unwrap(),
         }
     }
 
@@ -767,44 +822,54 @@ mod tests {
             page: Page::TodoList,
             items: vec![
                 make_item("1", "Buy milk", false),
-                make_item("2", "Write tests", false),
-                make_item("3", "Done task", true),
+                make_item("2", "Walk dog", true),
+                make_item("3", "Write code", false),
             ],
             ..Model::default()
         }
     }
 
-    #[test]
-    fn initial_view_is_loading() {
-        let app = TodoApp;
-        let model = Model::default();
-
-        assert!(matches!(app.view(&model), ViewModel::Loading));
+    /// Consume effects until a `Time` effect is found, resolve it with
+    /// `TimeRequest::Now`, and dispatch the resulting event through `update`.
+    fn resolve_time(
+        app: &TodoApp,
+        model: &mut Model,
+        cmd: &mut Command<Effect, Event>,
+        secs: u64,
+    ) -> Command<Effect, Event> {
+        loop {
+            let effect = cmd.effects().next().expect("expected a Time effect");
+            if let Effect::Time(mut request) = effect {
+                request
+                    .resolve(TimeResponse::Now {
+                        instant: TimeInstant::new(secs, 0),
+                    })
+                    .expect("resolve time");
+                let event = cmd.events().next().expect("event after time");
+                return app.update(event, model);
+            }
+        }
     }
 
+    // ── Initialization tests ───────────────────────────────────────────────
+
     #[test]
-    fn initialize_requests_kv_load() {
+    fn initialize_loads_from_kv() {
         let app = TodoApp;
         let mut model = Model::default();
 
         let mut cmd = app.update(Event::Initialize, &mut model);
-
-        let request = cmd.expect_one_effect().expect_key_value();
-        assert_eq!(
-            request.operation,
-            KeyValueOperation::Get {
-                key: STORAGE_KEY.to_string(),
-            }
-        );
+        let _request = cmd.expect_one_effect().expect_key_value();
     }
 
     #[test]
-    fn data_loaded_with_state_transitions_to_todo_list() {
+    fn data_loaded_with_items_transitions_to_todo_list() {
         let app = TodoApp;
         let mut model = Model::default();
 
+        let items = vec![make_item("1", "Test", false)];
         let state = PersistedState {
-            items: vec![make_item("1", "First", false)],
+            items,
             pending_ops: vec![],
         };
         let bytes = serde_json::to_vec(&state).unwrap();
@@ -812,13 +877,13 @@ mod tests {
         let mut cmd = app.update(Event::DataLoaded(Ok(Some(bytes))), &mut model);
 
         assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items[0].title, "Test");
         assert!(matches!(model.page, Page::TodoList));
-
         cmd.expect_effect().expect_render();
     }
 
     #[test]
-    fn data_loaded_none_transitions_to_empty_list() {
+    fn data_loaded_empty_transitions_to_todo_list() {
         let app = TodoApp;
         let mut model = Model::default();
 
@@ -826,40 +891,49 @@ mod tests {
 
         assert!(model.items.is_empty());
         assert!(matches!(model.page, Page::TodoList));
-
         cmd.expect_effect().expect_render();
     }
 
     #[test]
-    fn data_loaded_error_transitions_to_error_view() {
+    fn data_loaded_error_shows_error_page() {
         let app = TodoApp;
         let mut model = Model::default();
 
         let mut cmd = app.update(
             Event::DataLoaded(Err(KeyValueError::Io {
-                message: "corrupt".to_string(),
+                message: "disk full".to_string(),
             })),
             &mut model,
         );
 
         assert!(matches!(model.page, Page::Error));
         assert!(model.error_message.is_some());
-
         cmd.expect_one_effect().expect_render();
-
-        let ViewModel::Error(view) = app.view(&model) else {
-            panic!("expected Error view");
-        };
-        assert!(view.can_retry);
-        assert!(view.message.contains("corrupt"));
     }
+
+    #[test]
+    fn corrupted_state_recovers_with_defaults() {
+        let app = TodoApp;
+        let mut model = Model::default();
+
+        let corrupt_bytes = b"not valid json".to_vec();
+        let mut cmd =
+            app.update(Event::DataLoaded(Ok(Some(corrupt_bytes))), &mut model);
+
+        assert!(matches!(model.page, Page::TodoList));
+        assert!(model.items.is_empty());
+        assert!(model.pending_ops.is_empty());
+        cmd.expect_effect().expect_render();
+    }
+
+    // ── Navigation tests ───────────────────────────────────────────────────
 
     #[test]
     fn navigate_from_error_reinitializes() {
         let app = TodoApp;
         let mut model = Model {
             page: Page::Error,
-            error_message: Some("failed".to_string()),
+            error_message: Some("old error".to_string()),
             ..Model::default()
         };
 
@@ -867,147 +941,179 @@ mod tests {
 
         assert!(matches!(model.page, Page::Loading));
         assert!(model.error_message.is_none());
-
         cmd.expect_effect().expect_render();
         let event = cmd.expect_one_event();
         assert_eq!(event, Event::Initialize);
     }
 
-    #[test]
-    fn navigate_from_loading_is_noop() {
-        let app = TodoApp;
-        let mut model = Model::default();
-
-        let mut cmd = app.update(Event::Navigate(Route::TodoList), &mut model);
-
-        assert!(matches!(model.page, Page::Loading));
-        assert!(cmd.is_done());
-    }
+    // ── AddTodo tests ──────────────────────────────────────────────────────
 
     #[test]
-    fn set_input_updates_text() {
+    fn add_todo_with_valid_title() {
         let app = TodoApp;
-        let mut model = seeded_model();
-
-        let mut cmd = app.update(Event::SetInput("hello".to_string()), &mut model);
-
-        assert_eq!(model.input_text, "hello");
-        cmd.expect_one_effect().expect_render();
-    }
-
-    #[test]
-    fn add_todo_creates_item_and_queues_op() {
-        let app = TodoApp;
-        let mut model = seeded_model();
-        model.input_text = "New task".to_string();
+        let mut model = Model {
+            page: Page::TodoList,
+            new_title: "Buy groceries".to_string(),
+            ..Model::default()
+        };
 
         let mut cmd = app.update(
-            Event::AddTodo("local_4".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            Event::AddTodo {
+                id: "todo-1".to_string(),
+            },
             &mut model,
         );
 
-        assert_eq!(model.items.len(), 4);
-        assert_eq!(model.items[3].title, "New task");
-        assert_eq!(model.items[3].id, "local_4");
-        assert!(!model.items[3].completed);
-        assert!(model.input_text.is_empty());
+        assert!(model.new_title.is_empty());
+        assert!(model.items.is_empty());
+
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 1000);
+
+        assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items[0].title, "Buy groceries");
+        assert!(!model.items[0].completed);
+        assert_eq!(model.items[0].id, "todo-1");
         assert_eq!(model.pending_ops.len(), 1);
         assert!(matches!(&model.pending_ops[0], PendingOp::Create(_)));
-
-        cmd.expect_effect().expect_render();
     }
 
     #[test]
-    fn add_todo_with_empty_input_is_noop() {
+    fn add_todo_with_empty_title_is_noop() {
         let app = TodoApp;
-        let mut model = seeded_model();
-        model.input_text = "   ".to_string();
+        let mut model = Model {
+            page: Page::TodoList,
+            new_title: "   ".to_string(),
+            ..Model::default()
+        };
 
         let mut cmd = app.update(
-            Event::AddTodo("local_4".to_string(), "2025-06-15T11:00:00Z".to_string()),
+            Event::AddTodo {
+                id: "todo-1".to_string(),
+            },
             &mut model,
         );
 
-        assert_eq!(model.items.len(), 3);
-        assert!(model.pending_ops.is_empty());
+        assert!(model.items.is_empty());
         assert!(cmd.is_done());
     }
 
+    // ── Edit / Toggle tests ────────────────────────────────────────────────
+
     #[test]
-    fn edit_title_updates_item_and_queues_op() {
+    fn edit_title() {
         let app = TodoApp;
         let mut model = seeded_model();
 
         let mut cmd = app.update(
-            Event::EditTitle(
-                "1".to_string(),
-                "Buy oat milk".to_string(),
-                "2025-06-15T11:00:00Z".to_string(),
-            ),
+            Event::EditTitle {
+                id: "1".to_string(),
+                title: "Buy oat milk".to_string(),
+            },
             &mut model,
         );
+
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 2000);
 
         assert_eq!(model.items[0].title, "Buy oat milk");
-        assert_eq!(model.items[0].updated_at, "2025-06-15T11:00:00Z");
         assert_eq!(model.pending_ops.len(), 1);
-        assert!(matches!(&model.pending_ops[0], PendingOp::Update(_)));
-
-        cmd.expect_effect().expect_render();
     }
 
     #[test]
-    fn toggle_completed_flips_flag_and_queues_op() {
+    fn toggle_todo() {
         let app = TodoApp;
         let mut model = seeded_model();
-        assert!(!model.items[0].completed);
 
-        let mut cmd = app.update(
-            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
+        let mut cmd =
+            app.update(Event::ToggleTodo("1".to_string()), &mut model);
+
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 2000);
 
         assert!(model.items[0].completed);
-        assert_eq!(model.items[0].updated_at, "2025-06-15T11:00:00Z");
         assert_eq!(model.pending_ops.len(), 1);
         assert!(matches!(&model.pending_ops[0], PendingOp::Update(_)));
-
-        cmd.expect_effect().expect_render();
     }
 
+    // ── Delete tests ───────────────────────────────────────────────────────
+
     #[test]
-    fn delete_todo_removes_item_and_queues_op() {
+    fn delete_todo() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(
-            Event::DeleteTodo("2".to_string(), "2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
+        let mut cmd =
+            app.update(Event::DeleteTodo("2".to_string()), &mut model);
 
         assert_eq!(model.items.len(), 2);
-        assert!(!model.items.iter().any(|i| i.id == "2"));
-        assert_eq!(model.pending_ops.len(), 1);
-        assert!(matches!(&model.pending_ops[0], PendingOp::Delete { .. }));
+        assert!(model.items.iter().all(|i| i.id != "2"));
 
-        cmd.expect_effect().expect_render();
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 2000);
+
+        assert_eq!(model.pending_ops.len(), 1);
+        assert!(matches!(
+            &model.pending_ops[0],
+            PendingOp::Delete { item_id, .. } if item_id == "2"
+        ));
     }
 
     #[test]
-    fn clear_completed_removes_completed_items() {
+    fn delete_create_only_eliminates_without_network() {
+        let app = TodoApp;
+        let item = make_item("new-1", "Unsaved item", false);
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![item.clone()],
+            pending_ops: vec![PendingOp::Create(item)],
+            ..Model::default()
+        };
+
+        let _cmd =
+            app.update(Event::DeleteTodo("new-1".to_string()), &mut model);
+
+        assert!(model.items.is_empty());
+        assert!(model.pending_ops.is_empty());
+    }
+
+    // ── ClearCompleted tests ───────────────────────────────────────────────
+
+    #[test]
+    fn clear_completed_removes_done_items() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(
-            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
+        let mut cmd = app.update(Event::ClearCompleted, &mut model);
 
         assert_eq!(model.items.len(), 2);
         assert!(model.items.iter().all(|i| !i.completed));
-        assert_eq!(model.pending_ops.len(), 1);
-        assert!(matches!(&model.pending_ops[0], PendingOp::Delete { .. }));
 
-        cmd.expect_effect().expect_render();
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 2000);
+
+        assert_eq!(model.pending_ops.len(), 1);
+        assert!(matches!(
+            &model.pending_ops[0],
+            PendingOp::Delete { item_id, .. } if item_id == "2"
+        ));
+    }
+
+    #[test]
+    fn clear_completed_eliminates_create_only() {
+        let app = TodoApp;
+        let mut item = make_item("new-1", "Unsaved done", false);
+        item.completed = true;
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![
+                make_item("1", "Keep this", false),
+                item.clone(),
+            ],
+            pending_ops: vec![PendingOp::Create(item)],
+            ..Model::default()
+        };
+
+        let _cmd = app.update(Event::ClearCompleted, &mut model);
+
+        assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items[0].id, "1");
+        assert!(model.pending_ops.is_empty());
     }
 
     #[test]
@@ -1015,21 +1121,23 @@ mod tests {
         let app = TodoApp;
         let mut model = Model {
             page: Page::TodoList,
-            items: vec![make_item("1", "Active", false)],
+            items: vec![
+                make_item("1", "Active 1", false),
+                make_item("2", "Active 2", false),
+            ],
             ..Model::default()
         };
 
-        let mut cmd = app.update(
-            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
+        let mut cmd = app.update(Event::ClearCompleted, &mut model);
 
-        assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items.len(), 2);
         assert!(cmd.is_done());
     }
 
+    // ── Filter tests ───────────────────────────────────────────────────────
+
     #[test]
-    fn set_filter_changes_filter() {
+    fn set_filter_updates_view() {
         let app = TodoApp;
         let mut model = seeded_model();
 
@@ -1037,550 +1145,291 @@ mod tests {
 
         assert_eq!(model.filter, Filter::Active);
         cmd.expect_one_effect().expect_render();
+
+        let view = app.view(&model);
+        if let ViewModel::TodoList(list) = view {
+            assert_eq!(list.items.len(), 2);
+            assert!(list.items.iter().all(|i| !i.completed));
+        } else {
+            panic!("Expected TodoList view");
+        }
     }
 
     #[test]
-    fn view_filters_active_items() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            items: vec![
-                make_item("1", "Active", false),
-                make_item("2", "Done", true),
-            ],
-            filter: Filter::Active,
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.items.len(), 1);
-        assert_eq!(view.items[0].title, "Active");
-    }
-
-    #[test]
-    fn view_filters_completed_items() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            items: vec![
-                make_item("1", "Active", false),
-                make_item("2", "Done", true),
-            ],
-            filter: Filter::Completed,
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.items.len(), 1);
-        assert_eq!(view.items[0].title, "Done");
-    }
-
-    #[test]
-    fn view_shows_active_count() {
-        let app = TodoApp;
-        let model = seeded_model();
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.active_count, "2 items left");
-    }
-
-    #[test]
-    fn view_shows_singular_item_count() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            items: vec![make_item("1", "Only one", false)],
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.active_count, "1 item left");
-    }
-
-    #[test]
-    fn view_shows_clear_completed_when_completed_exist() {
-        let app = TodoApp;
-        let model = seeded_model();
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert!(view.show_clear_completed);
-    }
-
-    #[test]
-    fn view_hides_clear_completed_when_none_completed() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            items: vec![make_item("1", "Active", false)],
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert!(!view.show_clear_completed);
-    }
-
-    #[test]
-    fn view_sync_status_synced_when_idle_and_empty() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            sync_status: SyncStatus::Idle,
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.sync_status, "synced");
-    }
-
-    #[test]
-    fn view_sync_status_offline() {
-        let app = TodoApp;
-        let model = Model {
-            page: Page::TodoList,
-            sync_status: SyncStatus::Offline,
-            ..Model::default()
-        };
-
-        let ViewModel::TodoList(view) = app.view(&model) else {
-            panic!("expected TodoList view");
-        };
-
-        assert_eq!(view.sync_status, "offline");
-    }
-
-    #[test]
-    fn retry_sync_starts_syncing_pending_ops() {
+    fn set_new_title() {
         let app = TodoApp;
         let mut model = Model {
             page: Page::TodoList,
-            pending_ops: vec![PendingOp::Create(make_item("1", "Test", false))],
-            sync_status: SyncStatus::Offline,
             ..Model::default()
         };
 
-        let mut cmd = app.update(Event::RetrySync, &mut model);
+        let mut cmd =
+            app.update(Event::SetNewTitle("Hello".to_string()), &mut model);
 
-        assert_eq!(model.sync_status, SyncStatus::Syncing);
-        assert!(model.syncing_id.is_some());
-
-        cmd.expect_effect().expect_render();
-        let _request = cmd.expect_one_effect().expect_http();
-    }
-
-    #[test]
-    fn op_response_success_removes_pending_op() {
-        let app = TodoApp;
-        let server_item = make_item("1", "Test", false);
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![server_item.clone()],
-            pending_ops: vec![PendingOp::Create(server_item.clone())],
-            syncing_id: Some("1".to_string()),
-            sync_status: SyncStatus::Syncing,
-            ..Model::default()
-        };
-
-        let mut cmd = app.update(
-            Event::OpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
-                .body(server_item)
-                .build())),
-            &mut model,
-        );
-
-        assert!(model.pending_ops.is_empty());
-        assert!(model.syncing_id.is_none());
-        assert_eq!(model.sync_status, SyncStatus::Idle);
-
-        cmd.expect_effect().expect_render();
-    }
-
-    #[test]
-    fn op_response_error_sets_offline() {
-        let app = TodoApp;
-        let mut model = Model {
-            page: Page::TodoList,
-            pending_ops: vec![PendingOp::Create(make_item("1", "Test", false))],
-            syncing_id: Some("1".to_string()),
-            sync_status: SyncStatus::Syncing,
-            ..Model::default()
-        };
-
-        let mut cmd = app.update(
-            Event::OpResponse(Err(crux_http::HttpError::Url(
-                "network error".to_string(),
-            ))),
-            &mut model,
-        );
-
-        assert!(model.syncing_id.is_none());
-        assert_eq!(model.sync_status, SyncStatus::Offline);
-        assert_eq!(model.pending_ops.len(), 1);
-
+        assert_eq!(model.new_title, "Hello");
         cmd.expect_one_effect().expect_render();
     }
 
+    // ── SSE tests ──────────────────────────────────────────────────────────
+
     #[test]
-    fn sse_received_item_created_adds_item() {
+    fn sse_item_created() {
         let app = TodoApp;
         let mut model = seeded_model();
+        model.sse_state = SseState::Connected;
 
-        let msg = SseMessage {
-            event: "item_created".to_string(),
-            data: serde_json::to_vec(&make_item("new_1", "From server", false)).unwrap(),
-        };
+        let new_item = make_item("4", "New task", false);
+        let data = serde_json::to_vec(&new_item).unwrap();
 
-        let mut cmd = app.update(Event::SseReceived(msg), &mut model);
+        let _cmd = app.update(
+            Event::SseEvent(SseMessage {
+                event_type: "item_created".to_string(),
+                data,
+            }),
+            &mut model,
+        );
 
         assert_eq!(model.items.len(), 4);
-        assert!(model.items.iter().any(|i| i.id == "new_1"));
-        assert_eq!(model.sse_state, SseConnectionState::Connected);
-
-        cmd.expect_effect().expect_render();
+        assert_eq!(model.items[3].title, "New task");
     }
 
     #[test]
-    fn sse_received_item_updated_applies_conflict_resolution() {
+    fn sse_item_deleted() {
         let app = TodoApp;
+        let mut model = seeded_model();
+        model.sse_state = SseState::Connected;
+
+        let data =
+            serde_json::to_vec(&serde_json::json!({"id": "2"})).unwrap();
+
+        let _cmd = app.update(
+            Event::SseEvent(SseMessage {
+                event_type: "item_deleted".to_string(),
+                data,
+            }),
+            &mut model,
+        );
+
+        assert_eq!(model.items.len(), 2);
+        assert!(model.items.iter().all(|i| i.id != "2"));
+    }
+
+    #[test]
+    fn sse_deleted_during_sync_preserves_pending_ops() {
+        let app = TodoApp;
+        let mut model = seeded_model();
+        model.sse_state = SseState::Connected;
+        model.syncing_id = Some("2".to_string());
+        model.pending_ops.push(PendingOp::Update(make_item(
+            "2",
+            "Walk dog updated",
+            true,
+        )));
+
+        let data =
+            serde_json::to_vec(&serde_json::json!({"id": "2"})).unwrap();
+        let _cmd = app.update(
+            Event::SseEvent(SseMessage {
+                event_type: "item_deleted".to_string(),
+                data,
+            }),
+            &mut model,
+        );
+
+        assert_eq!(model.items.len(), 2);
+        assert!(model.items.iter().all(|i| i.id != "2"));
+        assert_eq!(model.pending_ops.len(), 1);
+        assert_eq!(model.pending_ops[0].item_id(), "2");
+    }
+
+    // ── Conflict resolution tests ──────────────────────────────────────────
+
+    #[test]
+    fn delete_conflict_server_wins() {
         let mut model = Model {
             page: Page::TodoList,
-            items: vec![make_item("1", "Local title", false)],
-            pending_ops: vec![PendingOp::Update(make_item("1", "Local title", false))],
+            items: vec![],
+            pending_ops: vec![PendingOp::Delete {
+                item_id: "1".to_string(),
+                deleted_at: DateTime::from_timestamp(1000, 0).unwrap(),
+            }],
             ..Model::default()
         };
 
-        let newer_item = TodoItem {
-            id: "1".to_string(),
-            title: "Server title".to_string(),
-            completed: true,
-            updated_at: "2025-06-15T12:00:00Z".to_string(),
-        };
+        let server_item = make_item_at("1", "Server version", false, 2000);
+        apply_server_item(&mut model, &server_item);
 
-        let msg = SseMessage {
-            event: "item_updated".to_string(),
-            data: serde_json::to_vec(&newer_item).unwrap(),
-        };
-
-        let mut cmd = app.update(Event::SseReceived(msg), &mut model);
-
-        assert_eq!(model.items[0].title, "Server title");
+        assert_eq!(model.items.len(), 1);
+        assert_eq!(model.items[0].title, "Server version");
         assert!(model.pending_ops.is_empty());
-
-        cmd.expect_effect().expect_render();
     }
 
     #[test]
-    fn sse_received_item_deleted_removes_item() {
-        let app = TodoApp;
-        let mut model = seeded_model();
-
-        let msg = SseMessage {
-            event: "item_deleted".to_string(),
-            data: br#"{"id":"2"}"#.to_vec(),
+    fn delete_conflict_local_wins() {
+        let mut model = Model {
+            page: Page::TodoList,
+            items: vec![],
+            pending_ops: vec![PendingOp::Delete {
+                item_id: "1".to_string(),
+                deleted_at: DateTime::from_timestamp(2000, 0).unwrap(),
+            }],
+            ..Model::default()
         };
 
-        let mut cmd = app.update(Event::SseReceived(msg), &mut model);
+        let server_item = make_item_at("1", "Stale server", false, 1000);
+        apply_server_item(&mut model, &server_item);
 
-        assert_eq!(model.items.len(), 2);
-        assert!(!model.items.iter().any(|i| i.id == "2"));
-
-        cmd.expect_effect().expect_render();
+        assert!(model.items.is_empty());
+        assert_eq!(model.pending_ops.len(), 1);
     }
 
+    // ── Operation coalescing tests ─────────────────────────────────────────
+
     #[test]
-    fn connect_sse_sets_connecting_state() {
+    fn rapid_toggle_coalesces_updates() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(Event::ConnectSse, &mut model);
+        let mut cmd =
+            app.update(Event::ToggleTodo("1".to_string()), &mut model);
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 1000);
 
-        assert_eq!(model.sse_state, SseConnectionState::Connecting);
+        assert_eq!(model.pending_ops.len(), 1);
 
-        cmd.expect_effect().expect_render();
-        let request = cmd.expect_one_effect().expect_server_sent_events();
-        assert_eq!(
-            request.operation,
-            SseRequest {
-                url: format!("{API_URL}/api/todos/events"),
-            }
-        );
+        let mut cmd =
+            app.update(Event::ToggleTodo("1".to_string()), &mut model);
+        let _cmd = resolve_time(&app, &mut model, &mut cmd, 2000);
+
+        assert_eq!(model.pending_ops.len(), 1);
+        if let PendingOp::Update(item) = &model.pending_ops[0] {
+            assert!(!item.completed);
+            assert_eq!(
+                item.updated_at,
+                DateTime::from_timestamp(2000, 0).unwrap()
+            );
+        } else {
+            panic!("Expected Update op");
+        }
     }
 
+    // ── Sync tests ─────────────────────────────────────────────────────────
+
     #[test]
-    fn sse_disconnected_fetches_items() {
+    fn start_sync_with_pending_create() {
         let app = TodoApp;
-        let mut model = seeded_model();
-        model.sse_state = SseConnectionState::Connected;
+        let mut model = Model {
+            page: Page::TodoList,
+            pending_ops: vec![PendingOp::Create(make_item("1", "Test", false))],
+            ..Model::default()
+        };
 
-        let mut cmd = app.update(Event::SseDisconnected, &mut model);
+        let mut cmd = app.update(Event::StartSync, &mut model);
 
-        assert_eq!(model.sse_state, SseConnectionState::Disconnected);
-
-        cmd.expect_effect().expect_render();
+        assert_eq!(model.sync_status, SyncStatus::Syncing);
+        assert_eq!(model.syncing_id.as_deref(), Some("1"));
         let _request = cmd.expect_one_effect().expect_http();
     }
 
     #[test]
-    fn data_saved_ok_is_silent() {
+    fn start_sync_empty_queue_is_noop() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(Event::DataSaved(Ok(None)), &mut model);
+        let mut cmd = app.update(Event::StartSync, &mut model);
 
         assert!(cmd.is_done());
     }
 
+    // ── SSE connection tests ───────────────────────────────────────────────
+
     #[test]
-    fn delete_op_response_success_removes_pending() {
+    fn connect_sse() {
         let app = TodoApp;
         let mut model = Model {
             page: Page::TodoList,
-            pending_ops: vec![PendingOp::Delete {
-                id: "1".to_string(),
-                deleted_at: "2025-06-15T11:00:00Z".to_string(),
-            }],
-            syncing_id: Some("1".to_string()),
-            sync_status: SyncStatus::Syncing,
             ..Model::default()
         };
 
-        let mut cmd = app.update(
-            Event::DeleteOpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
-                .body(String::new())
-                .build())),
-            &mut model,
-        );
+        let mut cmd = app.update(Event::ConnectSse, &mut model);
 
-        assert!(model.pending_ops.is_empty());
-        assert!(model.syncing_id.is_none());
-        assert_eq!(model.sync_status, SyncStatus::Idle);
-
+        assert_eq!(model.sse_state, SseState::Connecting);
         cmd.expect_effect().expect_render();
+        let _request = cmd.expect_one_effect().expect_server_sent_events();
     }
 
-    // ── Edge-case tests ─────────────────────────────────────────────────
+    // ── State persistence tests ────────────────────────────────────────────
 
     #[test]
-    fn sse_item_updated_during_sync_preserves_pending_ops() {
-        let app = TodoApp;
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![make_item("1", "Local title", false)],
-            pending_ops: vec![PendingOp::Update(make_item("1", "Local title", false))],
-            syncing_id: Some("1".to_string()),
-            sync_status: SyncStatus::Syncing,
-            ..Model::default()
-        };
-
-        let server_item = TodoItem {
-            id: "1".to_string(),
-            title: "Server title".to_string(),
-            completed: true,
-            updated_at: "2025-06-15T12:00:00Z".to_string(),
-        };
-
-        let msg = SseMessage {
-            event: "item_updated".to_string(),
-            data: serde_json::to_vec(&server_item).unwrap(),
-        };
-
-        let _ = app.update(Event::SseReceived(msg), &mut model);
-
-        assert_eq!(model.pending_ops.len(), 1, "pending ops preserved during in-flight sync");
-    }
-
-    #[test]
-    fn sse_item_deleted_during_sync_preserves_pending_ops() {
-        let app = TodoApp;
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![make_item("1", "Test", false)],
-            pending_ops: vec![PendingOp::Update(make_item("1", "Test", false))],
-            syncing_id: Some("1".to_string()),
-            sync_status: SyncStatus::Syncing,
-            ..Model::default()
-        };
-
-        let msg = SseMessage {
-            event: "item_deleted".to_string(),
-            data: br#"{"id":"1"}"#.to_vec(),
-        };
-
-        let _ = app.update(Event::SseReceived(msg), &mut model);
-
-        assert!(model.items.is_empty(), "item removed from model");
-        assert_eq!(model.pending_ops.len(), 1, "pending ops preserved during in-flight sync");
-    }
-
-    #[test]
-    fn edit_title_empty_string_is_noop() {
+    fn state_saved_ok_is_noop() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        let mut cmd = app.update(
-            Event::EditTitle(
-                "1".to_string(),
-                "   ".to_string(),
-                "2025-06-15T11:00:00Z".to_string(),
-            ),
-            &mut model,
-        );
+        let mut cmd = app.update(Event::StateSaved(Ok(None)), &mut model);
 
-        assert_eq!(model.items[0].title, "Buy milk");
-        assert!(model.pending_ops.is_empty());
         assert!(cmd.is_done());
     }
 
     #[test]
-    fn conflict_resolution_local_wins_when_newer() {
-        let app = TodoApp;
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![TodoItem {
-                id: "1".to_string(),
-                title: "Local edit".to_string(),
-                completed: false,
-                updated_at: "2025-06-15T12:00:00Z".to_string(),
-            }],
-            pending_ops: vec![PendingOp::Update(TodoItem {
-                id: "1".to_string(),
-                title: "Local edit".to_string(),
-                completed: false,
-                updated_at: "2025-06-15T12:00:00Z".to_string(),
-            })],
-            ..Model::default()
-        };
-
-        let older_server_item = TodoItem {
-            id: "1".to_string(),
-            title: "Server title".to_string(),
-            completed: true,
-            updated_at: "2025-06-15T10:00:00Z".to_string(),
-        };
-
-        let msg = SseMessage {
-            event: "item_updated".to_string(),
-            data: serde_json::to_vec(&older_server_item).unwrap(),
-        };
-
-        let _ = app.update(Event::SseReceived(msg), &mut model);
-
-        assert_eq!(model.items[0].title, "Local edit");
-        assert_eq!(model.pending_ops.len(), 1, "local wins — pending op preserved");
-    }
-
-    #[test]
-    fn clear_completed_coalesces_pending_creates() {
-        let app = TodoApp;
-        let item = TodoItem {
-            id: "local_1".to_string(),
-            title: "New item".to_string(),
-            completed: true,
-            updated_at: "2025-06-15T10:30:00Z".to_string(),
-        };
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![item.clone()],
-            pending_ops: vec![PendingOp::Create(item)],
-            ..Model::default()
-        };
-
-        let _ = app.update(
-            Event::ClearCompleted("2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
-
-        assert!(model.items.is_empty());
-        assert!(
-            model.pending_ops.is_empty(),
-            "no Delete queued for item that was never synced"
-        );
-    }
-
-    #[test]
-    fn rapid_toggle_second_update_survives_first_sync_response() {
+    fn state_saved_error_sets_offline() {
         let app = TodoApp;
         let mut model = seeded_model();
 
-        // First toggle — starts sync
-        let _ = app.update(
-            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
-        assert!(model.items[0].completed);
-        assert_eq!(model.syncing_id, Some("1".to_string()));
-        assert_eq!(model.sync_status, SyncStatus::Syncing);
-        assert_eq!(model.pending_ops.len(), 1);
-
-        // Second toggle while first sync is in-flight
-        let _ = app.update(
-            Event::ToggleCompleted("1".to_string(), "2025-06-15T11:01:00Z".to_string()),
-            &mut model,
-        );
-        assert!(!model.items[0].completed);
-        assert_eq!(model.pending_ops.len(), 2, "both ops queued");
-
-        // First sync response arrives
-        let server_item = TodoItem {
-            id: "1".to_string(),
-            title: "Buy milk".to_string(),
-            completed: true,
-            updated_at: "2025-06-15T11:00:00Z".to_string(),
-        };
-        let _ = app.update(
-            Event::OpResponse(Ok(crux_http::testing::ResponseBuilder::ok()
-                .body(server_item)
-                .build())),
+        let mut cmd = app.update(
+            Event::StateSaved(Err(KeyValueError::Io {
+                message: "write failed".to_string(),
+            })),
             &mut model,
         );
 
-        assert_eq!(
-            model.pending_ops.len(),
-            1,
-            "second toggle's op survives first sync response"
-        );
+        assert_eq!(model.sync_status, SyncStatus::Offline);
+        cmd.expect_one_effect().expect_render();
+    }
+
+    // ── View tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn view_loading() {
+        let app = TodoApp;
+        let model = Model::default();
+        let view = app.view(&model);
+        assert!(matches!(view, ViewModel::Loading));
     }
 
     #[test]
-    fn delete_of_unsynced_item_skips_server_delete() {
+    fn view_error() {
         let app = TodoApp;
-        let item = make_item("local_1", "New item", false);
-        let mut model = Model {
-            page: Page::TodoList,
-            items: vec![item.clone()],
-            pending_ops: vec![PendingOp::Create(item)],
+        let model = Model {
+            page: Page::Error,
+            error_message: Some("Something went wrong".to_string()),
             ..Model::default()
         };
 
-        let _ = app.update(
-            Event::DeleteTodo("local_1".to_string(), "2025-06-15T11:00:00Z".to_string()),
-            &mut model,
-        );
+        let view = app.view(&model);
+        match view {
+            ViewModel::Error(err) => {
+                assert_eq!(err.message, "Something went wrong");
+                assert!(err.can_retry);
+            }
+            _ => panic!("Expected Error view"),
+        }
+    }
 
-        assert!(model.items.is_empty());
-        assert!(
-            model.pending_ops.is_empty(),
-            "no Delete op queued for item that was never synced"
-        );
+    #[test]
+    fn view_todo_list() {
+        let app = TodoApp;
+        let model = seeded_model();
+
+        let view = app.view(&model);
+        match view {
+            ViewModel::TodoList(list) => {
+                assert_eq!(list.items.len(), 3);
+                assert_eq!(list.active_count, 2);
+                assert!(list.has_completed);
+                assert_eq!(list.filter, Filter::All);
+                assert_eq!(list.sync_status, SyncStatus::Idle);
+                assert_eq!(list.sse_state, SseState::Disconnected);
+            }
+            _ => panic!("Expected TodoList view"),
+        }
     }
 }

@@ -78,7 +78,7 @@ artifacts:
 
       ## 4. Code Review
       - [ ] 4.1 Invoke the core-reviewer skill with target-dir=<target-dir>
-            and reference-dir=examples/todo (if applicable)
+            and reference-dir=examples/opsx_todo (if applicable)
             (Read .cursor/skills/core-reviewer/SKILL.md and follow its process)
       - [ ] 4.2 Address all Critical and Warning findings
       - [ ] 4.3 Re-run cargo check, cargo test, cargo clippy after fixes

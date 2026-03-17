@@ -1,6 +1,7 @@
 import Inject
 import SharedTypes
 import SwiftUI
+import VectisDesign
 
 struct TodoListScreen: View {
     let viewModel: TodoListView
@@ -142,7 +143,7 @@ private struct TodoRow: View {
             } label: {
                 Image(systemName: item.completed ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(item.completed ? .blue : .secondary)
+                    .foregroundStyle(item.completed ? VectisColors.primary : VectisColors.onSurfaceSecondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(item.completed ? "Mark incomplete" : "Mark complete")
@@ -161,7 +162,7 @@ private struct TodoRow: View {
                 Text(item.title)
                     .font(.body)
                     .strikethrough(item.completed)
-                    .foregroundStyle(item.completed ? .secondary : .primary)
+                    .foregroundStyle(item.completed ? VectisColors.onSurfaceSecondary : VectisColors.onSurface)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture {

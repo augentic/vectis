@@ -11,10 +11,10 @@ artifacts:
       Create a lightweight proposal for the iOS shell.
 
       Sections:
-      - **App Reference**: Which Crux app this shell is for (e.g., examples/todo).
+      - **App Reference**: Which Crux app this shell is for (e.g., examples/opsx_todo).
         The app must already have a generated shared crate with shared/src/app.rs.
       - **Target Directory**: Where the iOS shell will be generated
-        (e.g., examples/todo/iOS). This becomes the project-dir argument for ios-writer.
+        (e.g., examples/opsx_todo/iOS). This becomes the project-dir argument for ios-writer.
       - **Motivation**: Why this shell is being built (testing, production, learning).
       - **Design System Notes**: Any overrides or customizations to the default
         VectisDesign tokens for this app. Leave empty to use defaults.

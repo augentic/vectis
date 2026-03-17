@@ -7,12 +7,12 @@
 ## Overview
 
 <!-- One sentence: which Crux app is this shell for, and where does it live?
-     Example: iOS shell for the TodoApp at examples/todo -->
+     Example: iOS shell for the TodoApp at examples/opsx_todo -->
 
 ## Target Directory
 
 <!-- Where the iOS shell will be generated.
-     Example: examples/todo/iOS -->
+     Example: examples/opsx_todo/iOS -->
 
 ## Navigation Style
 
